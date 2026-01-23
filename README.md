@@ -1,3 +1,4 @@
-# DS440_Alfred_Otis
-Repository for all files and work regarding our DS440 capstone project regarding Air Pollution in Europe and its Effects on Health
-Code for parent paper models: [[GitHub - angelisgiorgos/RegionalAQDatasets: This repository stores the data and descriptions presented on the IGARSS 2024 ORAL paper "Regional Datasets for Air Quality Monitoring in European Cities"](https://github.com/angelisgiorgos/RegionalAQDatasets/tree/main)]
+# DS340W_Alfred_Otis
+Repository for all files and work regarding our DS340W capstone project regarding Predicting Global Air Pollution and its Effects on Health
+
+Link to all downloadable Parent Paper Information: https://drive.google.com/drive/folders/19ZsUzhA5A0bFTib73QfEwwCQGnO4vFwU?usp=sharing
