@@ -1,68 +1,86 @@
 from pathlib import Path
-import shutil
 import pandas as pd
+import xarray as xr
+import re
 
-# =================================================
-# ROOT SETUP
-# =================================================
-# ROOT = Everything/
-ROOT = Path(__file__).resolve().parents[2]
+# Folder containing NetCDF files
+DATA_DIR = Path("../Everything")
 
-PROJECT_DIR = ROOT / "GlobalHighPM2.5-source-data"
-SOURCE_DIR  = ROOT                      # where .nc files live
-OUT_DIR     = PROJECT_DIR / "Data" / "raw_nc"
+# Output dataset
+OUT_FILE = Path("../Everything/na_pm25_cells_clean.csv")
 
-CSV_FILES = [
-    PROJECT_DIR / "train_files.csv",
-    PROJECT_DIR / "val_files.csv",
-    PROJECT_DIR / "test_files.csv",
-]
+LAT_MIN, LAT_MAX = 7.0, 84.0
+LON_MIN, LON_MAX = -168.0, -52.0
 
-OUT_DIR.mkdir(parents=True, exist_ok=True)
+# Downsample grid (adjust if needed)
+LAT_STRIDE = 10
+LON_STRIDE = 10
 
-# =================================================
-# COLLECT FILENAMES FROM CSVs
-# =================================================
-def collect_filenames(csv_paths):
-    names = set()
-    for csv in csv_paths:
-        df = pd.read_csv(csv)
-        for p in df["File Path"].astype(str):
-            names.add(Path(p).name)
-    return names
 
-# =================================================
-# COPY SELECTED FILES
-# =================================================
-def copy_selected_files(source_dir, filenames, out_dir):
-    matches = []
-    for fname in filenames:
-        src = source_dir / fname
-        if src.exists():
-            matches.append(src)
-        else:
-            print(f"⚠️  Missing file: {fname}")
+def parse_date(filename):
+    match = re.search(r'_(\d{6})_', filename)
+    if match is None:
+        raise ValueError(f"Cannot extract YYYYMM from filename: {filename}")
+    return pd.to_datetime(match.group(1), format="%Y%m")
 
-    print(f"Requested filenames: {len(filenames)}")
-    print(f"Found in source dir: {len(matches)}")
 
-    if not matches:
-        raise RuntimeError("No matching .nc files found in source directory!")
+def extract_values(nc_file):
 
-    for src in matches:
-        dst = out_dir / src.name
-        if dst.exists():
-            continue
-        shutil.copy2(src, dst)
+    ds = xr.open_dataset(nc_file)
 
-    print(f"Copied {len(matches)} files to:")
-    print(f"  {out_dir}")
+    # Automatically detect PM2.5 variable
+    var = list(ds.data_vars)[0]
+    da = ds[var]
 
-# =================================================
-# MAIN
-# =================================================
+    # Downsample grid
+    da = da.isel(
+        lat=slice(None, None, LAT_STRIDE),
+        lon=slice(None, None, LON_STRIDE)
+    )
+
+    # Subset North America
+    da = da.where(
+        (da.lat >= LAT_MIN) &
+        (da.lat <= LAT_MAX) &
+        (da.lon >= LON_MIN) &
+        (da.lon <= LON_MAX),
+        drop=True
+    )
+
+    df = da.to_dataframe().reset_index()
+
+    df.rename(columns={var: "pm25"}, inplace=True)
+
+    df["date"] = parse_date(nc_file.name)
+
+    # Remove rows without PM2.5 estimates
+    df = df.dropna(subset=["pm25"])
+
+    return df
+
+
+def main():
+
+    # Only monthly files
+    files = sorted(DATA_DIR.glob("GHAP_PM2.5_M1K_*.nc"))
+
+    print("Monthly files found:", len(files))
+
+    all_dfs = []
+
+    for f in files:
+        print("Processing:", f.name)
+        df = extract_values(f)
+        all_dfs.append(df)
+
+    full_df = pd.concat(all_dfs, ignore_index=True)
+
+    full_df.to_csv(OUT_FILE, index=False)
+
+    print("\nSaved cleaned dataset:", OUT_FILE)
+    print("Total rows:", len(full_df))
+    print(full_df.head())
+
+
 if __name__ == "__main__":
-    print(f"Source directory: {SOURCE_DIR}")
-    filenames = collect_filenames(CSV_FILES)
-    print(f"Total unique filenames requested: {len(filenames)}")
-    copy_selected_files(SOURCE_DIR, filenames, OUT_DIR)
+    main()
