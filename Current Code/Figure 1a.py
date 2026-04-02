@@ -1,29 +1,34 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import os
+from pathlib import Path
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "..", "Data")
-OUTPUT_DIR = os.path.join(BASE_DIR, "..", "Output")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# -------------------------------
+# PATHS
+# -------------------------------
+BASE_DIR = Path(__file__).resolve().parents[3]   # Project/
+DATA_FILE = BASE_DIR / "data" / "processed" / "figure data" / "Figure 1.xlsx"
+OUTPUT_DIR = BASE_DIR / "data" / "processed" / "figure data" / "output"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 if __name__ == "__main__":
+    print("Reading from:", DATA_FILE)
+    print("File exists:", DATA_FILE.exists())
 
-    df = pd.read_excel(os.path.join(DATA_DIR, "Figure 1.xlsx"))
+    df = pd.read_excel(DATA_FILE)
 
     lon = pd.to_numeric(df["Lon"], errors="coerce")
     lat = pd.to_numeric(df["Lat"], errors="coerce")
-    r2  = pd.to_numeric(df["R2"], errors="coerce")
+    r2 = pd.to_numeric(df["R2"], errors="coerce")
 
     mask = (~lon.isna()) & (~lat.isna()) & (~r2.isna())
     lon = lon[mask]
     lat = lat[mask]
-    r2  = r2[mask]
+    r2 = r2[mask]
 
-    fig = plt.figure(figsize=(10,5))
+    fig = plt.figure(figsize=(10, 5))
     ax = plt.axes(projection=ccrs.PlateCarree())
 
     ax.set_extent([-180, 180, -60, 80], crs=ccrs.PlateCarree())
@@ -44,24 +49,28 @@ if __name__ == "__main__":
     )
 
     cbar = plt.colorbar(
-    sc,
-    ax=ax,
-    orientation="horizontal",
-    pad=0.05,
-    fraction=0.05,
-    ticks=[0.3, 0.4, 0.5, 0.6, 0.7]
-)
+        sc,
+        ax=ax,
+        orientation="horizontal",
+        pad=0.05,
+        fraction=0.05,
+        ticks=[0.3, 0.4, 0.5, 0.6, 0.7]
+    )
     cbar.set_label("CV R²", fontsize=14)
-
     cbar.ax.tick_params(labelsize=14, width=2)
     cbar.outline.set_linewidth(2)
 
     for tick in cbar.ax.get_xticklabels():
         tick.set_fontweight("bold")
 
-    ax.text(-175, 75, "(a) CV-R²", fontsize=18, fontweight="bold",
-            transform=ccrs.PlateCarree())
+    ax.text(
+        -175, 75, "(a) CV-R²",
+        fontsize=18,
+        fontweight="bold",
+        transform=ccrs.PlateCarree()
+    )
 
-    plt.savefig(os.path.join(OUTPUT_DIR, "Figure_1a_R2_map.png"),
-                dpi=300, bbox_inches="tight")
+    output_file = OUTPUT_DIR / "Figure_1a_R2_map.png"
+    plt.savefig(output_file, dpi=300, bbox_inches="tight")
+    print("Saved to:", output_file)
     plt.close()
