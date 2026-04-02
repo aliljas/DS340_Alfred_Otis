@@ -1,73 +1,83 @@
-import os
+from pathlib import Path
 import pandas as pd
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
+# -------------------------------
+# PATHS
+# -------------------------------
+BASE_DIR = Path(__file__).resolve().parents[3]   # Project/
+DATA_FILE = BASE_DIR / "data" / "processed" / "figure data" / "Figure 1.xlsx"
+OUTPUT_DIR = BASE_DIR / "data" / "processed" / "figure data" / "output"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, '..', 'Data')
-OUTPUT_DIR = os.path.join(BASE_DIR, '..', 'Output')
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+if __name__ == "__main__":
+    print("Reading from:", DATA_FILE)
+    print("File exists:", DATA_FILE.exists())
 
-FILE_PATH = os.path.join(DATA_DIR, 'Figure 1.xlsx')
+    df = pd.read_excel(DATA_FILE, sheet_name="Figure 1b")
 
-df = pd.read_excel(FILE_PATH, sheet_name='Figure 1b')
+    lon = pd.to_numeric(df["Lon"], errors="coerce")
+    lat = pd.to_numeric(df["Lat"], errors="coerce")
+    nrmse = pd.to_numeric(df["NRMSE"], errors="coerce")
 
-lon = df['Lon'].values
-lat = df['Lat'].values
-nrmse = df['NRMSE'].values
+    mask = (~lon.isna()) & (~lat.isna()) & (~nrmse.isna())
+    lon = lon[mask]
+    lat = lat[mask]
+    nrmse = nrmse[mask]
 
-fig = plt.figure(figsize=(12, 4))
-ax = plt.axes(projection=ccrs.PlateCarree())
+    fig = plt.figure(figsize=(12, 4))
+    ax = plt.axes(projection=ccrs.PlateCarree())
 
-sc = ax.scatter(
-    lon,
-    lat,
-    c=nrmse,
-    cmap='RdYlBu_r',
-    vmin=0.2,
-    vmax=1.8,
-    s=6,
-    alpha=0.85,
-    transform=ccrs.PlateCarree()
-)
+    sc = ax.scatter(
+        lon,
+        lat,
+        c=nrmse,
+        cmap="RdYlBu_r",
+        vmin=0.2,
+        vmax=1.8,
+        s=6,
+        alpha=0.85,
+        transform=ccrs.PlateCarree()
+    )
 
-ax.add_feature(cfeature.COASTLINE, linewidth=0.4)
-ax.add_feature(cfeature.BORDERS, linewidth=0.25)
-ax.set_global()
+    ax.add_feature(cfeature.COASTLINE, linewidth=0.4)
+    ax.add_feature(cfeature.BORDERS, linewidth=0.25)
+    ax.set_global()
+    ax.gridlines(draw_labels=False, linewidth=0.2, linestyle="--")
 
-ax.gridlines(draw_labels=False, linewidth=0.2, linestyle='--')
+    bounds = [0.2, 0.6, 1.0, 1.4, 1.8]
 
-bounds = [0.2, 0.6, 1.0, 1.4, 1.8]
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes(
+        "bottom",
+        size="6%",
+        pad=0.25,
+        axes_class=plt.Axes
+    )
 
-divider = make_axes_locatable(ax)
-cax = divider.append_axes(
-    "bottom",
-    size="6%",
-    pad=0.25,
-    axes_class=plt.Axes
-)
+    cbar = plt.colorbar(
+        sc,
+        cax=cax,
+        orientation="horizontal",
+        ticks=bounds,
+        boundaries=bounds,
+        spacing="uniform",
+        drawedges=True
+    )
+    cbar.set_label("NRMSE", fontsize=12)
 
-cbar = plt.colorbar(
-    sc,
-    cax=cax,
-    orientation='horizontal',
-    ticks=bounds,
-    boundaries=bounds,
-    spacing='uniform',
-    drawedges=True
-)
+    ax.text(
+        0.01, 0.05,
+        "(b) NRMSE",
+        transform=ax.transAxes,
+        fontsize=12,
+        fontweight="bold"
+    )
 
-ax.text(
-    0.01, 0.05,
-    '(b) NRMSE',
-    transform=ax.transAxes,
-    fontsize=12,
-    fontweight='bold'
-)
-
-output_path = os.path.join(OUTPUT_DIR, 'Figure_1b_NRMSE.png')
-plt.savefig(output_path, dpi=300, bbox_inches='tight')
-plt.show()
+    output_path = OUTPUT_DIR / "Figure_1b_NRMSE.png"
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    print("Saved to:", output_path)
+    plt.show()
