@@ -4,8 +4,8 @@ The datasets used in this project are not stored directly in this GitHub reposit
 
 The primary PM2.5 dataset is the GHAP GlobalHighPM2.5 monthly NetCDF product. The official GHAP source is the Zenodo GHAP community and GlobalHighPM2.5 records:
 - GHAP community: [https://zenodo.org/communities/ghap/](https://zenodo.org/communities/ghap/)
-- Example GlobalHighPM2.5 daily record: [https://zenodo.org/records/10801181](https://zenodo.org/records/10801181)
-
+- Monthly GlobalHighPM2.5 download location: [https://zenodo.org/records/10800980](https://zenodo.org/records/10800980)
+  
 The meteorology dataset used in the modeling pipeline is ERA5 monthly averaged data on single levels from the Copernicus Climate Data Store:
 - ERA5 monthly data: [https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=download](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=download)
 
