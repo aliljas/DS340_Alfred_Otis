@@ -1,18 +1,29 @@
 from pathlib import Path
-import pandas as pd
-import xarray as xr
 import re
 
-# Folder containing NetCDF files
-DATA_DIR = Path("../Everything")
+try:
+    import pandas as pd
+    import xarray as xr
+except ImportError as exc:
+    raise SystemExit(
+        "Required packages for Extract_Monthly_nc_values.py are not installed. "
+        "Install the project requirements first, then rerun this script."
+    ) from exc
 
-# Output dataset
-OUT_FILE = Path("../Everything/na_pm25_cells_clean.csv")
 
+#Paths
+BASE_DIR = Path(__file__).resolve().parents[2]
+DATA_DIR = BASE_DIR / "data/raw"
+PROCESSED_DIR = BASE_DIR / "data/processed"
+OUT_FILE = PROCESSED_DIR / "na_pm25_cells_clean.csv"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+
+#North America bounds
 LAT_MIN, LAT_MAX = 7.0, 84.0
 LON_MIN, LON_MAX = -168.0, -52.0
 
-# Downsample grid (adjust if needed)
+#Downsample grid
 LAT_STRIDE = 10
 LON_STRIDE = 10
 
@@ -25,20 +36,20 @@ def parse_date(filename):
 
 
 def extract_values(nc_file):
-
+    #Open one monthly GHAP file
     ds = xr.open_dataset(nc_file)
 
-    # Automatically detect PM2.5 variable
+    #Detect the main PM2.5 field
     var = list(ds.data_vars)[0]
     da = ds[var]
 
-    # Downsample grid
+    #Downsample the grid before converting to a DataFrame
     da = da.isel(
         lat=slice(None, None, LAT_STRIDE),
         lon=slice(None, None, LON_STRIDE)
     )
 
-    # Subset North America
+    #Keep only the North America study domain
     da = da.where(
         (da.lat >= LAT_MIN) &
         (da.lat <= LAT_MAX) &
@@ -53,26 +64,32 @@ def extract_values(nc_file):
 
     df["date"] = parse_date(nc_file.name)
 
-    # Remove rows without PM2.5 estimates
+    #Drop empty PM2.5 cells before stacking all months
     df = df.dropna(subset=["pm25"])
 
     return df
 
 
 def main():
-
-    # Only monthly files
+    #Use only the monthly GHAP files that feed the modeling panel
     files = sorted(DATA_DIR.glob("GHAP_PM2.5_M1K_*.nc"))
+    if not files:
+        raise SystemExit(
+            "No monthly GHAP NetCDF files were found in data/raw. "
+            "Place the GHAP_PM2.5_M1K_*.nc files in data/raw and rerun this script."
+        )
 
     print("Monthly files found:", len(files))
 
     all_dfs = []
 
     for f in files:
+        #Extract one month at a time to keep the logic easy to follow
         print("Processing:", f.name)
         df = extract_values(f)
         all_dfs.append(df)
 
+    #Stack all months into the main modeling table
     full_df = pd.concat(all_dfs, ignore_index=True)
 
     full_df.to_csv(OUT_FILE, index=False)
