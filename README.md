@@ -149,7 +149,8 @@ All active scripts include import guards with clear setup messages if required P
 
 Alfred Liljas  
 The Pennsylvania State University
+Major in Computational Data Science
 
 Otis Murray  
 The Pennsylvania State University  
-Major in statistical modeling data science, minor in math
+Major in Statistical Modeling Data Science, Minor in Mathematics
