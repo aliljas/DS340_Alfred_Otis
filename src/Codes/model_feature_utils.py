@@ -220,11 +220,38 @@ def compute_relative_humidity(temp_c, dewpoint_c):
     return np.clip(rh, 0.0, 100.0).astype(np.float32)
 
 
+#ERA5 monthly key helper
+def build_era5_group_key(lat_idx, lon_idx, month_values, lon_count):
+    return (
+        lat_idx.astype(np.int64) * (lon_count * 12)
+        + lon_idx.astype(np.int64) * 12
+        + (month_values.astype(np.int64) - 1)
+    )
+
+
+#Train-only weather mean helper
+def compute_train_group_mean(values, group_key, key_series, train_mask):
+    train_stats = pd.DataFrame(
+        {
+            "group_key": group_key[train_mask],
+            "value": values[train_mask],
+        }
+    )
+    mean_map = train_stats.groupby("group_key", sort=False)["value"].mean()
+    mapped = key_series.map(mean_map).to_numpy(dtype=np.float32, copy=False)
+    return mapped
+
+
 #ERA5 anomaly and interaction features
-def add_era5_features(frame, raw_dir, train_end, use_era5=True):
+def add_era5_features(frame, raw_dir, train_end, use_era5=True, feature_level="extended"):
     if not use_era5:
         print("ERA5 meteorology disabled via model-specific *_USE_ERA5=0")
         return frame, []
+
+    if feature_level not in {"core", "extended"}:
+        raise ValueError("ERA5 feature_level must be 'core' or 'extended'")
+
+    include_extended = feature_level == "extended"
 
     #Find matching ERA5 files
     era5_files = find_era5_files(raw_dir)
@@ -260,8 +287,10 @@ def add_era5_features(frame, raw_dir, train_end, use_era5=True):
     lon_idx = np.rint((frame["lon"].to_numpy() - lon_values[0]) / lon_step).astype(np.int32)
     lat_idx = np.clip(lat_idx, 0, len(lat_values) - 1)
     lon_idx = np.clip(lon_idx, 0, len(lon_values) - 1)
-    frame["era5_lat_idx"] = lat_idx
-    frame["era5_lon_idx"] = lon_idx
+    month_values = frame["month"].to_numpy(dtype=np.int16, copy=False)
+    train_mask = frame["date"].to_numpy() < np.datetime64(train_end)
+    group_key = build_era5_group_key(lat_idx, lon_idx, month_values, len(lon_values))
+    key_series = pd.Series(group_key, copy=False)
 
     raw_name_map = {
         "u10": "era5_u10",
@@ -274,6 +303,7 @@ def add_era5_features(frame, raw_dir, train_end, use_era5=True):
     }
 
     #Pull monthly ERA5 values from each file
+    raw_arrays = {}
     for path in era5_files:
         with xr.open_dataset(path) as ds:
             file_time = pd.Index(pd.to_datetime(ds["valid_time"].values).to_period("M").to_timestamp())
@@ -284,149 +314,138 @@ def add_era5_features(frame, raw_dir, train_end, use_era5=True):
                 if raw_name not in ds.data_vars:
                     continue
                 values = ds[raw_name].values
-                frame[feature_name] = values[time_idx, lat_idx, lon_idx].astype(np.float32)
+                raw_arrays[feature_name] = values[time_idx, lat_idx, lon_idx].astype(np.float32)
                 del values
 
-    #Convert raw ERA5 variables into model-friendly weather fields
-    frame["era5_temp_c"] = (frame["era5_temp_k"] - 273.15).astype(np.float32)
-    frame["era5_dewpoint_c"] = (frame["era5_dewpoint_k"] - 273.15).astype(np.float32)
-    frame["era5_temp_dew_gap_c"] = (
-        frame["era5_temp_c"] - frame["era5_dewpoint_c"]
+    #Convert raw ERA5 variables into model-friendly weather arrays without
+    #attaching all intermediates to the giant modeling frame.
+    temp_c = (raw_arrays["era5_temp_k"] - 273.15).astype(np.float32)
+    dewpoint_c = (raw_arrays["era5_dewpoint_k"] - 273.15).astype(np.float32)
+    temp_dew_gap_c = (temp_c - dewpoint_c).astype(np.float32)
+    pressure_kpa = (raw_arrays["era5_surface_pressure_pa"] / 1000.0).astype(np.float32)
+    precip_log1p = np.log1p(raw_arrays["era5_total_precip_m"] * 1000.0).astype(np.float32)
+    wind_speed = np.sqrt(
+        raw_arrays["era5_u10"] ** 2 + raw_arrays["era5_v10"] ** 2
     ).astype(np.float32)
-    frame["era5_pressure_kpa"] = (frame["era5_surface_pressure_pa"] / 1000.0).astype(np.float32)
-    frame["era5_precip_log1p"] = np.log1p(frame["era5_total_precip_m"] * 1000.0).astype(
-        np.float32
-    )
-    frame["era5_wind_speed"] = np.sqrt(
-        frame["era5_u10"] ** 2 + frame["era5_v10"] ** 2
+    rel_humidity = compute_relative_humidity(temp_c, dewpoint_c)
+    cloud_cover = raw_arrays["era5_cloud_cover"].astype(np.float32)
+    stagnation = (pressure_kpa / (wind_speed + 0.5)).astype(np.float32)
+
+    #Map train-only monthly weather means back to each row one variable at a time.
+    frame["era5_temp_c_anom"] = (
+        temp_c - compute_train_group_mean(temp_c, group_key, key_series, train_mask)
     ).astype(np.float32)
-    frame["era5_rel_humidity"] = compute_relative_humidity(
-        frame["era5_temp_c"].to_numpy(),
-        frame["era5_dewpoint_c"].to_numpy(),
-    )
-    frame["era5_cloud_cover"] = frame["era5_cloud_cover"].astype(np.float32)
-    frame["era5_stagnation"] = (
-        frame["era5_pressure_kpa"] / (frame["era5_wind_speed"] + 0.5)
+    frame["era5_pressure_kpa_anom"] = (
+        pressure_kpa - compute_train_group_mean(pressure_kpa, group_key, key_series, train_mask)
+    ).astype(np.float32)
+    frame["era5_precip_log1p_anom"] = (
+        precip_log1p - compute_train_group_mean(precip_log1p, group_key, key_series, train_mask)
+    ).astype(np.float32)
+    frame["era5_cloud_cover_anom"] = (
+        cloud_cover - compute_train_group_mean(cloud_cover, group_key, key_series, train_mask)
+    ).astype(np.float32)
+    frame["era5_wind_speed_anom"] = (
+        wind_speed - compute_train_group_mean(wind_speed, group_key, key_series, train_mask)
+    ).astype(np.float32)
+    frame["era5_rel_humidity_anom"] = (
+        rel_humidity - compute_train_group_mean(rel_humidity, group_key, key_series, train_mask)
+    ).astype(np.float32)
+    frame["era5_temp_dew_gap_c_anom"] = (
+        temp_dew_gap_c - compute_train_group_mean(temp_dew_gap_c, group_key, key_series, train_mask)
+    ).astype(np.float32)
+    frame["era5_stagnation_anom"] = (
+        stagnation - compute_train_group_mean(stagnation, group_key, key_series, train_mask)
     ).astype(np.float32)
 
-    weather_base_features = [
-        "era5_temp_c",
-        "era5_pressure_kpa",
-        "era5_precip_log1p",
-        "era5_cloud_cover",
-        "era5_wind_speed",
-        "era5_rel_humidity",
-        "era5_temp_dew_gap_c",
-        "era5_stagnation",
-    ]
+    del raw_arrays
+    del temp_c
+    del dewpoint_c
+    del temp_dew_gap_c
+    del pressure_kpa
+    del precip_log1p
+    del wind_speed
+    del rel_humidity
+    del cloud_cover
+    del stagnation
 
-    #Build train-only monthly weather normals on the ERA5 grid
-    weather_stats = (
-        frame.loc[frame["date"] < train_end, ["era5_lat_idx", "era5_lon_idx", "month"] + weather_base_features]
-        .groupby(["era5_lat_idx", "era5_lon_idx", "month"], as_index=False)
-        .agg(
-            era5_temp_c_month_mean_train=("era5_temp_c", "mean"),
-            era5_pressure_kpa_month_mean_train=("era5_pressure_kpa", "mean"),
-            era5_precip_log1p_month_mean_train=("era5_precip_log1p", "mean"),
-            era5_cloud_cover_month_mean_train=("era5_cloud_cover", "mean"),
-            era5_wind_speed_month_mean_train=("era5_wind_speed", "mean"),
-            era5_rel_humidity_month_mean_train=("era5_rel_humidity", "mean"),
-            era5_temp_dew_gap_c_month_mean_train=("era5_temp_dew_gap_c", "mean"),
-            era5_stagnation_month_mean_train=("era5_stagnation", "mean"),
-        )
-    )
-    frame = frame.merge(
-        weather_stats,
-        on=["era5_lat_idx", "era5_lon_idx", "month"],
-        how="left",
-    )
+    #Build the lean core weather interactions first.
+    frame["wx_stagnation_x_lag1"] = (
+        frame["era5_stagnation_anom"] * frame["pm25_lag1"]
+    ).astype(np.float32)
+    frame["wx_pressure_x_lag1"] = (
+        frame["era5_pressure_kpa_anom"] * frame["pm25_lag1"]
+    ).astype(np.float32)
+    frame["wx_wind_x_lag1"] = (
+        frame["era5_wind_speed_anom"] * frame["pm25_lag1"]
+    ).astype(np.float32)
+    frame["wx_precip_x_lag1"] = (
+        frame["era5_precip_log1p_anom"] * frame["pm25_lag1"]
+    ).astype(np.float32)
+    frame["wx_humidity_x_lag1"] = (
+        frame["era5_rel_humidity_anom"] * frame["pm25_lag1"]
+    ).astype(np.float32)
+    frame["wx_tempgap_x_lag1"] = (
+        frame["era5_temp_dew_gap_c_anom"] * frame["pm25_lag1"]
+    ).astype(np.float32)
+    frame["wx_stagnation_x_dev30"] = (
+        frame["era5_stagnation_anom"] * frame["pm25_deviation_30"]
+    ).astype(np.float32)
+    frame["wx_wind_x_dev30"] = (
+        frame["era5_wind_speed_anom"] * frame["pm25_deviation_30"]
+    ).astype(np.float32)
+    frame["wx_precip_x_dev30"] = (
+        frame["era5_precip_log1p_anom"] * frame["pm25_deviation_30"]
+    ).astype(np.float32)
+    frame["wx_temp_x_yoy"] = (
+        frame["era5_temp_c_anom"] * frame["pm25_yoy_change"]
+    ).astype(np.float32)
 
-    #Turn same-month weather into anomaly features
-    for base_name in weather_base_features:
-        mean_col = f"{base_name}_month_mean_train"
-        frame[f"{base_name}_anom"] = (frame[base_name] - frame[mean_col]).astype(np.float32)
+    added_features = ERA5_ANOMALY_FEATURES + ERA5_INTERACTION_FEATURES
 
-    #Build weather interactions and persistence-style features
-    weather_group = frame.groupby(["lat", "lon"], sort=False)
-    era5_extra_cols = {
-        "wx_stagnation_x_lag1": frame["era5_stagnation_anom"] * frame["pm25_lag1"],
-        "wx_pressure_x_lag1": frame["era5_pressure_kpa_anom"] * frame["pm25_lag1"],
-        "wx_wind_x_lag1": frame["era5_wind_speed_anom"] * frame["pm25_lag1"],
-        "wx_precip_x_lag1": frame["era5_precip_log1p_anom"] * frame["pm25_lag1"],
-        "wx_humidity_x_lag1": frame["era5_rel_humidity_anom"] * frame["pm25_lag1"],
-        "wx_tempgap_x_lag1": frame["era5_temp_dew_gap_c_anom"] * frame["pm25_lag1"],
-        "wx_stagnation_x_dev30": frame["era5_stagnation_anom"] * frame["pm25_deviation_30"],
-        "wx_wind_x_dev30": frame["era5_wind_speed_anom"] * frame["pm25_deviation_30"],
-        "wx_precip_x_dev30": frame["era5_precip_log1p_anom"] * frame["pm25_deviation_30"],
-        "wx_temp_x_yoy": frame["era5_temp_c_anom"] * frame["pm25_yoy_change"],
-        "era5_temp_c_anom_lag1": weather_group["era5_temp_c_anom"].shift(1),
-        "era5_precip_log1p_anom_lag1": weather_group["era5_precip_log1p_anom"].shift(1),
-        "era5_wind_speed_anom_lag1": weather_group["era5_wind_speed_anom"].shift(1),
-        "era5_stagnation_anom_lag1": weather_group["era5_stagnation_anom"].shift(1),
-        "era5_smoke_trap_index": (
+    #Only build the heavier persistence-style ERA terms when a model asks
+    #for the extended weather batch.
+    if include_extended:
+        weather_group = frame.groupby(["lat", "lon"], sort=False)
+        frame["era5_temp_c_anom_lag1"] = weather_group["era5_temp_c_anom"].shift(1).astype(np.float32)
+        frame["era5_precip_log1p_anom_lag1"] = weather_group["era5_precip_log1p_anom"].shift(1).astype(np.float32)
+        frame["era5_wind_speed_anom_lag1"] = weather_group["era5_wind_speed_anom"].shift(1).astype(np.float32)
+        frame["era5_stagnation_anom_lag1"] = weather_group["era5_stagnation_anom"].shift(1).astype(np.float32)
+        frame["era5_smoke_trap_index"] = (
             frame["era5_stagnation_anom"]
             - frame["era5_wind_speed_anom"]
             - frame["era5_precip_log1p_anom"]
-        ),
-        "era5_fire_weather_index": (
+        ).astype(np.float32)
+        frame["era5_fire_weather_index"] = (
             frame["era5_temp_c_anom"]
             + frame["era5_stagnation_anom"]
             - frame["era5_precip_log1p_anom"]
-        ),
-    }
-    era5_extra_df = pd.DataFrame(era5_extra_cols, index=frame.index).astype(np.float32)
-    smoke_trap_group = era5_extra_df.groupby([frame["lat"], frame["lon"]], sort=False)["era5_smoke_trap_index"]
-    fire_weather_group = era5_extra_df.groupby([frame["lat"], frame["lon"]], sort=False)["era5_fire_weather_index"]
-    era5_extra_df["era5_smoke_trap_lag1"] = smoke_trap_group.shift(1).astype(np.float32)
-    era5_extra_df["era5_fire_weather_lag1"] = fire_weather_group.shift(1).astype(np.float32)
-    era5_extra_df["era5_smoke_trap_roll3"] = smoke_trap_group.transform(
-        lambda x: x.shift(1).rolling(3, min_periods=3).mean()
-    ).astype(np.float32)
-    era5_extra_df["era5_fire_weather_roll3"] = fire_weather_group.transform(
-        lambda x: x.shift(1).rolling(3, min_periods=3).mean()
-    ).astype(np.float32)
-    era5_extra_df["wx_smoke_trap_x_lag1"] = (
-        era5_extra_df["era5_smoke_trap_index"] * frame["pm25_lag1"]
-    ).astype(np.float32)
-    era5_extra_df["wx_fire_weather_x_lag1"] = (
-        era5_extra_df["era5_fire_weather_index"] * frame["pm25_lag1"]
-    ).astype(np.float32)
-    era5_extra_df["wx_smoke_trap_x_dev30"] = (
-        era5_extra_df["era5_smoke_trap_index"] * frame["pm25_deviation_30"]
-    ).astype(np.float32)
-    frame = pd.concat([frame, era5_extra_df], axis=1)
+        ).astype(np.float32)
 
-    #Drop temporary raw columns once engineered features are ready
-    drop_cols = [
-        "era5_u10",
-        "era5_v10",
-        "era5_dewpoint_c",
-        "era5_temp_k",
-        "era5_dewpoint_k",
-        "era5_surface_pressure_pa",
-        "era5_total_precip_m",
-        "era5_lat_idx",
-        "era5_lon_idx",
-        "era5_temp_c",
-        "era5_pressure_kpa",
-        "era5_precip_log1p",
-        "era5_cloud_cover",
-        "era5_wind_speed",
-        "era5_rel_humidity",
-        "era5_temp_dew_gap_c",
-        "era5_stagnation",
-        "era5_temp_c_month_mean_train",
-        "era5_pressure_kpa_month_mean_train",
-        "era5_precip_log1p_month_mean_train",
-        "era5_cloud_cover_month_mean_train",
-        "era5_wind_speed_month_mean_train",
-        "era5_rel_humidity_month_mean_train",
-        "era5_temp_dew_gap_c_month_mean_train",
-        "era5_stagnation_month_mean_train",
-    ]
-    frame = frame.drop(columns=drop_cols)
+        smoke_trap_group = frame.groupby(["lat", "lon"], sort=False)["era5_smoke_trap_index"]
+        fire_weather_group = frame.groupby(["lat", "lon"], sort=False)["era5_fire_weather_index"]
+        frame["era5_smoke_trap_lag1"] = smoke_trap_group.shift(1).astype(np.float32)
+        frame["era5_fire_weather_lag1"] = fire_weather_group.shift(1).astype(np.float32)
+        frame["era5_smoke_trap_roll3"] = smoke_trap_group.transform(
+            lambda x: x.shift(1).rolling(3, min_periods=3).mean()
+        ).astype(np.float32)
+        frame["era5_fire_weather_roll3"] = fire_weather_group.transform(
+            lambda x: x.shift(1).rolling(3, min_periods=3).mean()
+        ).astype(np.float32)
+        frame["wx_smoke_trap_x_lag1"] = (
+            frame["era5_smoke_trap_index"] * frame["pm25_lag1"]
+        ).astype(np.float32)
+        frame["wx_fire_weather_x_lag1"] = (
+            frame["era5_fire_weather_index"] * frame["pm25_lag1"]
+        ).astype(np.float32)
+        frame["wx_smoke_trap_x_dev30"] = (
+            frame["era5_smoke_trap_index"] * frame["pm25_deviation_30"]
+        ).astype(np.float32)
+        added_features = added_features + ERA5_EXTENDED_FEATURES
 
-    added_features = ERA5_ANOMALY_FEATURES + ERA5_INTERACTION_FEATURES + ERA5_EXTENDED_FEATURES
+    #Release the ERA grouping helpers once the final weather features exist.
+    del group_key
+    del key_series
+
     print(f"Added ERA5 anomaly/interaction/persistence features: {', '.join(added_features)}")
     return frame, added_features
 
@@ -566,6 +585,7 @@ def prepare_modeling_frame(
     sample_cell_count=None,
     random_seed=42,
     use_era5=True,
+    era5_feature_level="extended",
     target=TARGET,
 ):
     print("\n--- LOADING DATA ---")
@@ -599,6 +619,7 @@ def prepare_modeling_frame(
         raw_dir=raw_dir,
         train_end=train_end,
         use_era5=use_era5,
+        feature_level=era5_feature_level,
     )
     frame = frame.dropna().copy()
 
