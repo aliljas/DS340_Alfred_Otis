@@ -84,6 +84,7 @@ COMPARISON_PLOT_OUTPUT_FILE = PROCESSED_DIR / "xgb_era5_comparison.png"
 
 
 #Metric helpers
+#Compute paper metrics
 def compute_metrics(y_true, y_pred):
     return {
         "RMSE": float(np.sqrt(mean_squared_error(y_true, y_pred))),
@@ -95,6 +96,7 @@ def compute_metrics(y_true, y_pred):
 
 
 #Print helper
+#Print metrics consistently
 def print_metrics(name, metrics):
     print(f"\n{name}")
     print(f"RMSE:      {metrics['RMSE']:.6f}")
@@ -105,6 +107,7 @@ def print_metrics(name, metrics):
 
 
 #Target transform
+#Train in transformed space
 def transform_target(values):
     if TARGET_TRANSFORM == "log1p":
         return np.log1p(values)
@@ -114,6 +117,7 @@ def transform_target(values):
 
 
 #Target inverse transform
+#Return to PM2.5 scale
 def inverse_target(values):
     if TARGET_TRANSFORM == "log1p":
         return np.expm1(values)
@@ -121,21 +125,29 @@ def inverse_target(values):
 
 
 #One XGBoost scenario
+#Fit one scenario
 def fit_scenario(label, feature_list, train_frame, val_frame, test_frame):
+    #Feature matrices
     X_train = train_frame[feature_list]
     X_val = val_frame[feature_list]
     X_test = test_frame[feature_list]
+
+    #Targets
     y_train = transform_target(train_frame[TARGET].values)
     y_val = transform_target(val_frame[TARGET].values)
     y_val_raw = val_frame[TARGET].values
     y_test = test_frame[TARGET].values
 
     print(f"\n--- TRAINING {MODEL_NAME.upper()} ({label}) ---")
+
+    #Build model
     model = XGBRegressor(
         eval_metric="rmse",
         early_stopping_rounds=75,
         **XGB_PARAMS,
     )
+
+    #Fit with early stopping
     model.fit(
         X_train,
         y_train,
@@ -145,8 +157,13 @@ def fit_scenario(label, feature_list, train_frame, val_frame, test_frame):
     print("--- DONE ---")
     print("Best iteration:", model.best_iteration)
 
+    #Predict validation rows
     val_pred = inverse_target(model.predict(X_val, iteration_range=(0, model.best_iteration + 1)))
+
+    #Predict test rows
     test_pred = inverse_target(model.predict(X_test, iteration_range=(0, model.best_iteration + 1)))
+
+    #Build importance table
     importance_df = pd.DataFrame(
         {
             "feature": feature_list,
@@ -168,50 +185,71 @@ def fit_scenario(label, feature_list, train_frame, val_frame, test_frame):
 
 
 #Main summary plot
+#Save the main summary figure
 def save_main_plot(result):
     if not SAVE_PLOT:
         print("Skipped plot generation. Set XGB_SAVE_PLOT=1 to save plots.")
         return
 
-    #Create a compact 3-panel summary figure
+    #Create a 3-panel figure
     fig = plt.figure(figsize=(18, 5))
 
     #Feature chart
     plt.subplot(1, 3, 1)
+    #Top 15 features
     top_imp = result["importance_df"].head(15).sort_values("importance")
+    #Plot importance bars
     plt.barh(top_imp["feature"], top_imp["importance"])
+    #Panel title
     plt.title("Top 15 Feature Importance")
 
     #Predicted vs actual
     plt.subplot(1, 3, 2)
+    #Plot sample size
     plot_sample = min(100_000, len(result["y_test"]))
+    #Sample test rows
     sample_idx = np.random.default_rng(RANDOM_SEED).choice(
         len(result["y_test"]),
         size=plot_sample,
         replace=False,
     )
+    #Scatter actual vs predicted
     plt.scatter(result["y_test"][sample_idx], result["test_pred"][sample_idx], alpha=0.25, s=5)
+    #Axis limits
     lims = [
         min(float(result["y_test"].min()), float(np.min(result["test_pred"]))),
         max(float(result["y_test"].max()), float(np.max(result["test_pred"]))),
     ]
+    #Perfect-fit line
     plt.plot(lims, lims, "r--", linewidth=1)
+    #X label
     plt.xlabel("Actual PM2.5")
+    #Y label
     plt.ylabel("Predicted PM2.5")
+    #Panel title
     plt.title("Predicted vs Actual (Test)")
 
     #Residual histogram
     plt.subplot(1, 3, 3)
+    #Residuals
     residuals = result["y_test"] - result["test_pred"]
+    #Residual histogram
     plt.hist(residuals, bins=60)
+    #Zero line
     plt.axvline(0, linewidth=1)
+    #X label
     plt.xlabel("Residual (Actual - Predicted)")
+    #Panel title
     plt.title("Residual Distribution")
 
+    #Tight layout
     plt.tight_layout()
+    #Save figure
     plt.savefig(PLOT_OUTPUT_FILE, dpi=150)
+    #Close figure to save memory
     plt.close()
 
+    #Print save path
     print("Saved plot to:", PLOT_OUTPUT_FILE)
 
 
@@ -270,42 +308,56 @@ def save_comparison_plot(baseline_result, enhanced_result):
 
     #Predicted vs actual without ERA5
     plt.subplot(2, 2, 3)
+    #Plot sample size
     plot_sample = min(75_000, len(baseline_result["y_test"]))
+    #Shared sampled rows
     sample_idx = np.random.default_rng(RANDOM_SEED).choice(
         len(baseline_result["y_test"]),
         size=plot_sample,
         replace=False,
     )
+    #Scatter baseline predictions
     plt.scatter(
         baseline_result["y_test"][sample_idx],
         baseline_result["test_pred"][sample_idx],
         alpha=0.2,
         s=5,
     )
+    #Axis limits
     lims = [
         min(float(baseline_result["y_test"].min()), float(np.min(baseline_result["test_pred"]))),
         max(float(baseline_result["y_test"].max()), float(np.max(baseline_result["test_pred"]))),
     ]
+    #Perfect-fit line
     plt.plot(lims, lims, "r--", linewidth=1)
+    #X label
     plt.xlabel("Actual PM2.5")
+    #Y label
     plt.ylabel("Predicted PM2.5")
+    #Panel title
     plt.title("Without ERA5")
 
     #Predicted vs actual with ERA5
     plt.subplot(2, 2, 4)
+    #Scatter ERA predictions
     plt.scatter(
         enhanced_result["y_test"][sample_idx],
         enhanced_result["test_pred"][sample_idx],
         alpha=0.2,
         s=5,
     )
+    #Axis limits
     lims = [
         min(float(enhanced_result["y_test"].min()), float(np.min(enhanced_result["test_pred"]))),
         max(float(enhanced_result["y_test"].max()), float(np.max(enhanced_result["test_pred"]))),
     ]
+    #Perfect-fit line
     plt.plot(lims, lims, "r--", linewidth=1)
+    #X label
     plt.xlabel("Actual PM2.5")
+    #Y label
     plt.ylabel("Predicted PM2.5")
+    #Panel title
     plt.title("With ERA5")
 
     #Tighten layout
@@ -339,16 +391,24 @@ test = df[df["date"] >= VAL_END].copy()
 
 feature_sets_no_era5 = build_feature_sets([])
 feature_sets_with_era5 = build_feature_sets(era5_feature_names)
+
+#Validate feature set choice
 if FEATURE_SET not in feature_sets_with_era5:
     raise ValueError(
         f"Unknown XGB_FEATURE_SET={FEATURE_SET!r}. "
         f"Choose from: {', '.join(feature_sets_with_era5)}"
     )
 
+#Baseline features
 baseline_features = feature_sets_no_era5[FEATURE_SET]
+
+#ERA-aware features
 enhanced_features = feature_sets_with_era5[FEATURE_SET]
+
+#Pick active features
 active_features = enhanced_features if era5_feature_names else baseline_features
 
+#Print active setup
 print(f"\nFeature set: {FEATURE_SET}")
 print(f"Feature count: {len(active_features)}")
 print(f"Target transform: {TARGET_TRANSFORM}")
@@ -378,6 +438,7 @@ print_metrics(f"{MODEL_NAME} Validation Metrics", enhanced_result["val_metrics"]
 print_metrics(f"{MODEL_NAME} Test Metrics", enhanced_result["test_metrics"])
 print_metrics("Naive Test Metrics", naive_metrics)
 
+#Build metrics table
 metrics_df = pd.DataFrame(
     [
         {"Dataset": "Validation", "Model": MODEL_NAME, "FeatureSet": FEATURE_SET, "Scenario": enhanced_label, **enhanced_result["val_metrics"]},
@@ -385,13 +446,24 @@ metrics_df = pd.DataFrame(
         {"Dataset": "Naive_Test", "Model": "pm25_lag1", "Scenario": "lag1", **naive_metrics},
     ]
 )
+
+#Save metrics CSV
 metrics_df.to_csv(METRICS_OUTPUT_FILE, index=False)
+
+#Print save path
 print("\nSaved evaluation metrics to:", METRICS_OUTPUT_FILE)
 
 #Feature importance
+#Save importance CSV
 enhanced_result["importance_df"].to_csv(IMPORTANCE_OUTPUT_FILE, index=False)
+
+#Print save path
 print("Saved feature importance to:", IMPORTANCE_OUTPUT_FILE)
+
+#Print importance header
 print("\nTop 15 Features:")
+
+#Print top importance rows
 print(enhanced_result["importance_df"].head(15).to_string(index=False))
 
 if baseline_result is not None:
@@ -485,6 +557,9 @@ if RUN_FORECAST and not USE_ERA5 and not COMPARE_ERA5:
 
         #Fill any leftovers
         X_future = X_future.fillna(0.0)
+
+        #Print step header
+        print(f"\nForecast step {step + 1}/12: {next_date.strftime('%Y-%m-%d')}")
 
         #Predict next month
         preds = inverse_target(
