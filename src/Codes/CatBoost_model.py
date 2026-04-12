@@ -253,7 +253,7 @@ def fit_forecast_model(feature_list, observed_frame, best_iteration):
 
 #Recursive future forecast
 #Forecast one month at a time
-def run_recursive_forecast(forecast_model, history_frame, feature_list):
+def run_recursive_forecast(forecast_model, history_frame, feature_list, fill_values):
     print("\n--- FORECASTING 2023 ---")
 
     #Observed history
@@ -295,17 +295,38 @@ def run_recursive_forecast(forecast_model, history_frame, feature_list):
         future_feature_sets = build_feature_sets(future_era5_feature_names)
         future_features = future_feature_sets[FEATURE_SET]
         future_rows = temp.loc[temp["date"] == next_date].copy()
-        future_rows = future_rows.dropna(subset=future_features)
 
-        #Stop if no rows are scoreable
+        #Stop if the next-month slice is missing
         if future_rows.empty:
             raise SystemExit(
-                "Recursive forecasting could not build valid future rows. "
+                "Recursive forecasting could not build future rows. "
+                "Check that the selected feature set can be computed causally."
+            )
+
+        #Build future matrix
+        X_future = future_rows.loc[:, future_features].copy()
+
+        #Fill from training medians
+        X_future = X_future.fillna(fill_values)
+
+        #Fill any leftovers
+        X_future = X_future.fillna(0.0)
+
+        #Prepare future matrix
+        X_future = prepare_model_frame(
+            X_future,
+            future_features,
+            [col for col in ["month", "region_lat_bin", "region_lon_bin"] if col in future_features],
+        )
+
+        #Stop if fill still leaves no rows
+        if X_future.empty:
+            raise SystemExit(
+                "Recursive forecasting could not build valid future rows after filling. "
                 "Check that the selected feature set can be computed causally."
             )
 
         #Score the next month
-        X_future = prepare_model_frame(future_rows, future_features, [])
         preds = inverse_target(forecast_model.predict(X_future)).astype(np.float32)
         future_rows[TARGET] = preds
 
@@ -577,6 +598,12 @@ enhanced_result = fit_scenario(enhanced_label, active_features, train, val, test
 naive_pred = enhanced_result["X_test"]["pm25_lag1"].astype(float).values
 naive_metrics = compute_metrics(enhanced_result["y_test"], naive_pred)
 
+#Store training medians for forecast fill
+train_feature_fill_values = train[active_features].median(numeric_only=True)
+
+#Fill any all-missing medians
+train_feature_fill_values = train_feature_fill_values.fillna(0.0)
+
 #Print final metrics
 print("\n--- FINAL RESULTS ---")
 print_metrics(f"{MODEL_NAME} Validation Metrics", enhanced_result["val_metrics"])
@@ -635,7 +662,12 @@ if RUN_FORECAST and not USE_ERA5 and not COMPARE_ERA5:
         enhanced_result["model"].get_best_iteration(),
     )
     #Generate monthly recursive predictions
-    run_recursive_forecast(forecast_model, observed_history, active_features)
+    run_recursive_forecast(
+        forecast_model,
+        observed_history,
+        active_features,
+        train_feature_fill_values,
+    )
 #Explain why forecast was skipped in other modes
 elif RUN_FORECAST:
     print(
