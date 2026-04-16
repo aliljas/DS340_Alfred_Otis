@@ -29,6 +29,11 @@ Convenience folder used for this project:
 
 - Google Drive ZIPs and paper PDFs: [https://drive.google.com/drive/folders/19ZsUzhA5A0bFTib73QfEwwCQGnO4vFwU?usp=sharing](https://drive.google.com/drive/folders/19ZsUzhA5A0bFTib73QfEwwCQGnO4vFwU?usp=sharing)
 
+GitHub release assets for the clean-machine workflow:
+
+- Cleaned PM2.5 modeling table ZIP: [https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv.zip](https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv.zip)
+- ERA raw data ZIP: [https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/ERA.Data.zip](https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/ERA.Data.zip)
+
 ## GHAP raw data
 
 Download the monthly GHAP NetCDF files and place them directly in:
@@ -103,7 +108,23 @@ The active scripts do not use hard-coded user-specific file paths. Each script r
 
 ## Required folder layout
 
-Place the raw files here before running anything:
+If you are using the GitHub release assets instead of downloading from the original sources:
+
+1. Download `na_pm25_cells_clean.csv.zip` from the release assets and extract it into `data/processed/`.
+2. Download `ERA.Data.zip` from the release assets and extract it into `data/raw/`.
+
+After extraction, the project should contain:
+
+`data/processed/na_pm25_cells_clean.csv`  
+Cleaned North America monthly PM2.5 modeling table.
+
+`data/raw/meteorlogy-data.nc`  
+ERA5 monthly weather file.
+
+`data/raw/meteorlogy-data-other.nc`  
+Second ERA5 monthly weather file.
+
+If you are starting from the original source files instead, place the raw files here before running anything:
 
 `data/raw/GHAP_PM2.5_M1K_*.nc`  
 Monthly GHAP PM2.5 files.
