@@ -161,7 +161,7 @@ This reads the GHAP monthly files from `data/raw/` and writes:
 ## Main model scripts
 
 `src/Codes/LightGBM_model.py`  
-Primary model script and before/after ERA5 comparison outputs.
+Primary LightGBM benchmark script. The default run is now the forecast-ready no-ERA baseline, and ERA5 comparison mode can be enabled with environment variables.
 
 `src/Codes/CatBoost_model.py`  
 CatBoost benchmark on the shared feature pipeline.
@@ -181,6 +181,18 @@ Full LightGBM run:
 
 ```bash
 python src/Codes/LightGBM_model.py
+```
+
+Full LightGBM run with ERA5 enabled:
+
+```bash
+LIGHTGBM_USE_ERA5=1 python src/Codes/LightGBM_model.py
+```
+
+Full LightGBM run with before/after ERA5 comparison outputs:
+
+```bash
+LIGHTGBM_USE_ERA5=1 LIGHTGBM_COMPARE_ERA5=1 python src/Codes/LightGBM_model.py
 ```
 
 Full CatBoost run:
