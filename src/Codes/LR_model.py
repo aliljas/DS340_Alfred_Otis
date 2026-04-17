@@ -23,18 +23,24 @@ try:
     #Use non-GUI backend
     matplotlib.use("Agg")
 
-    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
     from sklearn.linear_model import Ridge
-    from sklearn.metrics import (
-        mean_absolute_error,
-        mean_squared_error,
-        median_absolute_error,
-        r2_score,
-    )
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
+    from common_model_utils import (
+        build_comparison_table,
+        build_metrics_table,
+        compute_metrics,
+        inverse_target as shared_inverse_target,
+        print_metrics,
+        print_run_configuration,
+        run_recursive_forecast,
+        save_era5_comparison_plot,
+        save_main_results_plot,
+        split_train_val_test,
+        transform_target as shared_transform_target,
+    )
     from model_feature_utils import (
         TARGET,
         add_era5_features,
@@ -57,7 +63,7 @@ except ImportError as exc:
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 #Set processed directory
-PROCESSED_DIR = BASE_DIR / "data/processed"
+PROCESSED_DIR = Path(os.getenv("LR_OUTPUT_DIR", str(BASE_DIR / "data/processed")))
 
 #Set raw directory
 RAW_DIR = BASE_DIR / "data/raw"
@@ -69,7 +75,7 @@ PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 RAW_DIR.mkdir(parents=True, exist_ok=True)
 
 #Set cleaned data file
-DATA_FILE = PROCESSED_DIR / "na_pm25_cells_clean.csv"
+DATA_FILE = Path(os.getenv("LR_DATA_FILE", str(PROCESSED_DIR / "na_pm25_cells_clean.csv")))
 
 #Set train end date
 TRAIN_END = pd.Timestamp("2021-01-01")
@@ -105,6 +111,9 @@ ERA5_FEATURE_LEVEL = os.getenv("LR_ERA5_FEATURE_LEVEL", "core")
 #Set forecast usage
 RUN_FORECAST = os.getenv("LR_RUN_FORECAST", "1") == "1"
 
+#Set forecast horizon
+FORECAST_MONTHS = int(os.getenv("LR_FORECAST_MONTHS", "12"))
+
 #Set model name
 MODEL_NAME = "RidgeRegression"
 
@@ -128,61 +137,12 @@ COMPARISON_METRICS_OUTPUT_FILE = PROCESSED_DIR / "lr_era5_comparison_metrics.csv
 COMPARISON_PLOT_OUTPUT_FILE = PROCESSED_DIR / "lr_era5_comparison.png"
 
 
-#Compute regression metrics
-def compute_metrics(y_true, y_pred):
-    #Return metric dictionary
-    return {
-        "RMSE": float(np.sqrt(mean_squared_error(y_true, y_pred))),
-        "MAE": float(mean_absolute_error(y_true, y_pred)),
-        "R2": float(r2_score(y_true, y_pred)),
-        "MedianAE": float(median_absolute_error(y_true, y_pred)),
-        "Bias": float(np.mean(y_pred - y_true)),
-    }
-
-
-#Print metrics nicely
-def print_metrics(name, metrics):
-    #Print section name
-    print(f"\n{name}")
-
-    #Print RMSE
-    print(f"RMSE:      {metrics['RMSE']:.6f}")
-
-    #Print MAE
-    print(f"MAE:       {metrics['MAE']:.6f}")
-
-    #Print R-squared
-    print(f"R^2:       {metrics['R2']:.6f}")
-
-    #Print median AE
-    print(f"Median AE: {metrics['MedianAE']:.6f}")
-
-    #Print bias
-    print(f"Bias:      {metrics['Bias']:.6f}")
-
-
-#Transform target
 def transform_target(values):
-    #Use log1p transform
-    if TARGET_TRANSFORM == "log1p":
-        return np.log1p(values)
-
-    #Use raw target
-    if TARGET_TRANSFORM == "none":
-        return values
-
-    #Reject bad option
-    raise ValueError("LR_TARGET_TRANSFORM must be 'log1p' or 'none'")
+    return shared_transform_target(values, TARGET_TRANSFORM, "LR_TARGET_TRANSFORM")
 
 
-#Inverse target transform
 def inverse_target(values):
-    #Undo log1p
-    if TARGET_TRANSFORM == "log1p":
-        return np.expm1(values)
-
-    #Return unchanged
-    return values
+    return shared_inverse_target(values, TARGET_TRANSFORM)
 
 
 #Find best blend weight
@@ -338,252 +298,6 @@ def fit_scenario(label, feature_list, train_frame, val_frame, test_frame):
     }
 
 
-#Save main plot
-def save_main_plot(result):
-    #Skip if disabled
-    if not SAVE_PLOT:
-        print("Skipped plot generation. Set LR_SAVE_PLOT=1 to save plots.")
-        return
-
-    #Create figure
-    fig = plt.figure(figsize=(18, 5))
-
-    #Go to first panel
-    plt.subplot(1, 3, 1)
-
-    #Select top coefficients
-    top_coef = result["coef_df"].head(15).sort_values("abs_coefficient")
-
-    #Draw bar chart
-    plt.barh(top_coef["feature"], top_coef["abs_coefficient"])
-
-    #Set panel title
-    plt.title("Top 15 Absolute Coefficients")
-
-    #Go to second panel
-    plt.subplot(1, 3, 2)
-
-    #Set sample size
-    plot_sample = min(100_000, len(result["y_test"]))
-
-    #Sample test rows
-    sample_idx = np.random.default_rng(RANDOM_SEED).choice(
-        len(result["y_test"]),
-        size=plot_sample,
-        replace=False,
-    )
-
-    #Draw scatter
-    plt.scatter(
-        result["y_test"][sample_idx],
-        result["test_pred"][sample_idx],
-        alpha=0.25,
-        s=5,
-    )
-
-    #Compute axis limits
-    lims = [
-        min(float(result["y_test"].min()), float(np.min(result["test_pred"]))),
-        max(float(result["y_test"].max()), float(np.max(result["test_pred"]))),
-    ]
-
-    #Draw perfect-fit line
-    plt.plot(lims, lims, "r--", linewidth=1)
-
-    #Set x label
-    plt.xlabel("Actual PM2.5")
-
-    #Set y label
-    plt.ylabel("Predicted PM2.5")
-
-    #Set panel title
-    plt.title("Predicted vs Actual (Test)")
-
-    #Go to third panel
-    plt.subplot(1, 3, 3)
-
-    #Compute residuals
-    residuals = result["y_test"] - result["test_pred"]
-
-    #Draw residual histogram
-    plt.hist(residuals, bins=60)
-
-    #Draw zero line
-    plt.axvline(0, linewidth=1)
-
-    #Set x label
-    plt.xlabel("Residual (Actual - Predicted)")
-
-    #Set panel title
-    plt.title("Residual Distribution")
-
-    #Tighten layout
-    plt.tight_layout()
-
-    #Save figure
-    plt.savefig(PLOT_OUTPUT_FILE, dpi=150)
-
-    #Close figure
-    plt.close()
-
-    #Print save path
-    print("Saved plot to:", PLOT_OUTPUT_FILE)
-
-
-#Save comparison plot
-def save_comparison_plot(baseline_result, enhanced_result):
-    #Skip if disabled
-    if not SAVE_COMPARISON_PLOT:
-        print("Skipped comparison plot generation. Set LR_SAVE_COMPARISON_PLOT=1 to save it.")
-        return
-
-    #Create figure
-    fig = plt.figure(figsize=(12, 10))
-
-    #Go to first panel
-    plt.subplot(2, 2, 1)
-
-    #Set labels
-    labels = ["Validation", "Test"]
-
-    #Set x positions
-    x = np.arange(len(labels))
-
-    #Set bar width
-    width = 0.35
-
-    #Collect baseline R2
-    baseline_r2 = [baseline_result["val_metrics"]["R2"], baseline_result["test_metrics"]["R2"]]
-
-    #Collect enhanced R2
-    enhanced_r2 = [enhanced_result["val_metrics"]["R2"], enhanced_result["test_metrics"]["R2"]]
-
-    #Draw baseline bars
-    plt.bar(x - width / 2, baseline_r2, width=width, label="Without ERA5")
-
-    #Draw enhanced bars
-    plt.bar(x + width / 2, enhanced_r2, width=width, label="With ERA5")
-
-    #Set x ticks
-    plt.xticks(x, labels)
-
-    #Set y label
-    plt.ylabel("R^2")
-
-    #Set title
-    plt.title("Ridge Regression R^2 Before vs After ERA5")
-
-    #Show legend
-    plt.legend()
-
-    #Go to second panel
-    plt.subplot(2, 2, 2)
-
-    #Collect baseline RMSE
-    baseline_rmse = [baseline_result["val_metrics"]["RMSE"], baseline_result["test_metrics"]["RMSE"]]
-
-    #Collect enhanced RMSE
-    enhanced_rmse = [enhanced_result["val_metrics"]["RMSE"], enhanced_result["test_metrics"]["RMSE"]]
-
-    #Draw baseline bars
-    plt.bar(x - width / 2, baseline_rmse, width=width, label="Without ERA5")
-
-    #Draw enhanced bars
-    plt.bar(x + width / 2, enhanced_rmse, width=width, label="With ERA5")
-
-    #Set x ticks
-    plt.xticks(x, labels)
-
-    #Set y label
-    plt.ylabel("RMSE")
-
-    #Set title
-    plt.title("Ridge Regression RMSE Before vs After ERA5")
-
-    #Show legend
-    plt.legend()
-
-    #Go to third panel
-    plt.subplot(2, 2, 3)
-
-    #Set scatter sample size
-    plot_sample = min(75_000, len(baseline_result["y_test"]))
-
-    #Sample common rows
-    sample_idx = np.random.default_rng(RANDOM_SEED).choice(
-        len(baseline_result["y_test"]),
-        size=plot_sample,
-        replace=False,
-    )
-
-    #Draw baseline scatter
-    plt.scatter(
-        baseline_result["y_test"][sample_idx],
-        baseline_result["test_pred"][sample_idx],
-        alpha=0.2,
-        s=5,
-    )
-
-    #Compute limits
-    lims = [
-        min(float(baseline_result["y_test"].min()), float(np.min(baseline_result["test_pred"]))),
-        max(float(baseline_result["y_test"].max()), float(np.max(baseline_result["test_pred"]))),
-    ]
-
-    #Draw perfect-fit line
-    plt.plot(lims, lims, "r--", linewidth=1)
-
-    #Set x label
-    plt.xlabel("Actual PM2.5")
-
-    #Set y label
-    plt.ylabel("Predicted PM2.5")
-
-    #Set title
-    plt.title("Without ERA5")
-
-    #Go to fourth panel
-    plt.subplot(2, 2, 4)
-
-    #Draw enhanced scatter
-    plt.scatter(
-        enhanced_result["y_test"][sample_idx],
-        enhanced_result["test_pred"][sample_idx],
-        alpha=0.2,
-        s=5,
-    )
-
-    #Compute limits
-    lims = [
-        min(float(enhanced_result["y_test"].min()), float(np.min(enhanced_result["test_pred"]))),
-        max(float(enhanced_result["y_test"].max()), float(np.max(enhanced_result["test_pred"]))),
-    ]
-
-    #Draw perfect-fit line
-    plt.plot(lims, lims, "r--", linewidth=1)
-
-    #Set x label
-    plt.xlabel("Actual PM2.5")
-
-    #Set y label
-    plt.ylabel("Predicted PM2.5")
-
-    #Set title
-    plt.title("With ERA5")
-
-    #Tighten layout
-    plt.tight_layout()
-
-    #Save figure
-    plt.savefig(COMPARISON_PLOT_OUTPUT_FILE, dpi=150)
-
-    #Close figure
-    plt.close()
-
-    #Print save path
-    print("Saved ERA5 comparison plot to:", COMPARISON_PLOT_OUTPUT_FILE)
-
-
 #Build modeling frame
 df, era5_feature_names = prepare_modeling_frame(
     DATA_FILE,
@@ -632,13 +346,7 @@ required_columns = ["date", TARGET] + required_features
 df = df.loc[:, required_columns].copy()
 
 #Split training data
-train = df[df["date"] < TRAIN_END].copy()
-
-#Split validation data
-val = df[(df["date"] >= TRAIN_END) & (df["date"] < VAL_END)].copy()
-
-#Split test data
-test = df[df["date"] >= VAL_END].copy()
+train, val, test = split_train_val_test(df, TRAIN_END, VAL_END)
 
 #Free memory
 del df
@@ -649,20 +357,7 @@ train_feature_fill_values = train[active_features].median(numeric_only=True)
 #Fill any remaining missing medians with zero
 train_feature_fill_values = train_feature_fill_values.fillna(0.0)
 
-#Print selected feature set
-print(f"\nFeature set: {FEATURE_SET}")
-
-#Print feature count
-print(f"Feature count: {len(active_features)}")
-
-#Print target transform
-print(f"Target transform: {TARGET_TRANSFORM}")
-
-#Print ERA5 level
-print(f"ERA5 feature level: {ERA5_FEATURE_LEVEL}")
-
-#Print split sizes
-print(f"\nTrain: {len(train):,}  Val: {len(val):,}  Test: {len(test):,}")
+print_run_configuration(FEATURE_SET, active_features, TARGET_TRANSFORM, ERA5_FEATURE_LEVEL, train, val, test)
 
 #Initialize baseline result
 baseline_result = None
@@ -702,12 +397,13 @@ print_metrics(f"{MODEL_NAME} Test Metrics", enhanced_result["test_metrics"])
 print_metrics("Naive Test Metrics", naive_metrics)
 
 #Build metrics table
-metrics_df = pd.DataFrame(
-    [
-        {"Dataset": "Validation", "Model": MODEL_NAME, "FeatureSet": FEATURE_SET, "Scenario": enhanced_label, **enhanced_result["val_metrics"]},
-        {"Dataset": "Test", "Model": MODEL_NAME, "FeatureSet": FEATURE_SET, "Scenario": enhanced_label, **enhanced_result["test_metrics"]},
-        {"Dataset": "Naive_Test", "Model": "pm25_lag1", "Scenario": "lag1", **naive_metrics},
-    ]
+metrics_df = build_metrics_table(
+    MODEL_NAME,
+    FEATURE_SET,
+    enhanced_label,
+    enhanced_result["val_metrics"],
+    enhanced_result["test_metrics"],
+    naive_metrics,
 )
 
 #Save metrics table
@@ -731,14 +427,7 @@ print(enhanced_result["coef_df"].head(15).to_string(index=False))
 #Save comparison outputs
 if baseline_result is not None:
     #Build comparison table
-    comparison_df = pd.DataFrame(
-        [
-            {"Scenario": "Without_ERA5", "Dataset": "Validation", "FeatureSet": FEATURE_SET, **baseline_result["val_metrics"]},
-            {"Scenario": "Without_ERA5", "Dataset": "Test", "FeatureSet": FEATURE_SET, **baseline_result["test_metrics"]},
-            {"Scenario": "With_ERA5", "Dataset": "Validation", "FeatureSet": FEATURE_SET, **enhanced_result["val_metrics"]},
-            {"Scenario": "With_ERA5", "Dataset": "Test", "FeatureSet": FEATURE_SET, **enhanced_result["test_metrics"]},
-        ]
-    )
+    comparison_df = build_comparison_table(FEATURE_SET, baseline_result, enhanced_result)
 
     #Save comparison CSV
     comparison_df.to_csv(COMPARISON_METRICS_OUTPUT_FILE, index=False)
@@ -747,149 +436,56 @@ if baseline_result is not None:
     print("Saved ERA5 comparison metrics to:", COMPARISON_METRICS_OUTPUT_FILE)
 
     #Save comparison plot
-    save_comparison_plot(baseline_result, enhanced_result)
+    save_era5_comparison_plot(
+        baseline_result,
+        enhanced_result,
+        COMPARISON_PLOT_OUTPUT_FILE,
+        SAVE_COMPARISON_PLOT,
+        "Skipped comparison plot generation. Set LR_SAVE_COMPARISON_PLOT=1 to save it.",
+        "Ridge Regression",
+        RANDOM_SEED,
+    )
 
 #Explain why comparison skipped
 else:
     print("Skipped ERA5 comparison outputs because the baseline scenario was not run.")
 
 #Save optional main plot
-save_main_plot(enhanced_result)
+save_main_results_plot(
+    enhanced_result,
+    PLOT_OUTPUT_FILE,
+    SAVE_PLOT,
+    "Skipped plot generation. Set LR_SAVE_PLOT=1 to save plots.",
+    "coef_df",
+    "abs_coefficient",
+    "Top 15 Absolute Coefficients",
+    RANDOM_SEED,
+    sort_column="abs_coefficient",
+)
 
 #Run baseline forecast only
 if RUN_FORECAST and not USE_ERA5 and not COMPARE_ERA5:
-    #Start 2023 forecasting
-    print("\n--- FORECASTING 2023 ---")
-
-    #Build full history
-    history = pd.concat([train, val, test], ignore_index=True)[["lat", "lon", "date", TARGET]].copy()
-
-    #Store forecast outputs
-    future_preds = []
-
-    #Find last known date
-    latest_date = history["date"].max()
-
-    #Forecast 12 months
-    for step in range(12):
-        #Advance one month
-        next_date = latest_date + pd.DateOffset(months=1)
-
-        #Copy latest grid
-        base = history[history["date"] == latest_date][["lat", "lon"]].copy()
-
-        #Set future date
-        base["date"] = next_date
-
-        #Append empty future target
-        temp = pd.concat([history, base.assign(pm25=np.nan)], ignore_index=True)
-
-        #Sort for lag features
-        temp = temp.sort_values(["lat", "lon", "date"]).reset_index(drop=True)
-
-        #Add history features
-        temp = add_history_features(temp, target=TARGET)
-
-        #Add train-only climatology
-        temp = add_train_only_climatology(temp, train_end=TRAIN_END, target=TARGET)
-
-        #Add engineered features
-        temp = add_experimental_features(temp)
-
-        #Add future-safe ERA5 columns
-        temp, future_era5_feature_names = add_era5_features(
-            temp,
-            raw_dir=RAW_DIR,
-            train_end=TRAIN_END,
-            use_era5=False,
-        )
-
-        #Build LR feature sets
-        future_feature_sets = build_linear_feature_sets(future_era5_feature_names)
-
-        #Get matching feature set
-        future_features = future_feature_sets[FEATURE_SET]
-
-        #Keep next-month rows
-        future_rows = temp[temp["date"] == next_date].copy()
-
-        #Check for missing columns
-        missing_feature_columns = [col for col in active_features if col not in future_rows.columns]
-
-        #Stop on missing columns
-        if missing_feature_columns:
-            raise ValueError(
-                "Forecast feature mismatch. Missing columns: "
-                + ", ".join(missing_feature_columns)
-            )
-
-        #Print step header
-        print(f"\nForecast step {step + 1}/12: {next_date.strftime('%Y-%m-%d')}")
-
-        #Count missing values before fill
-        missing_counts = future_rows[active_features].isna().sum()
-        missing_counts = missing_counts[missing_counts > 0].sort_values(ascending=False)
-
-        #Print missing features if any
-        if not missing_counts.empty:
-            print("Missing values before fill:")
-            print(missing_counts.to_string())
-
-        #Build future matrix in training order
-        X_future = future_rows.loc[:, active_features].copy()
-
-        #Fill missing values from training medians
-        X_future = X_future.fillna(train_feature_fill_values)
-
-        #Fill anything still missing with zero
-        X_future = X_future.fillna(0.0)
-
-        #Stop if no rows remain
-        if X_future.empty:
-            raise ValueError("Forecast matrix is empty after feature construction.")
-
-        #Stop if NaNs still remain
-        if X_future.isna().any().any():
-            remaining_missing = X_future.isna().sum()
-            remaining_missing = remaining_missing[remaining_missing > 0]
-            raise ValueError(
-                "Forecast matrix still contains NaNs after fill:\n"
-                + remaining_missing.to_string()
-            )
-
-        #Predict future PM2.5
-        preds = inverse_target(model.predict(X_future))
-
-        #Clip to train range
-        preds = np.clip(
-            preds,
-            float(train[TARGET].min()),
-            float(train[TARGET].max()),
-        )
-
-        #Write predictions
-        future_rows[TARGET] = preds
-
-        #Append to history
-        history = pd.concat(
-            [history, future_rows[["lat", "lon", "date", TARGET]]],
-            ignore_index=True,
-        )
-
-        #Save monthly forecast
-        future_preds.append(future_rows[["lat", "lon", "date", TARGET]].copy())
-
-        #Advance pointer
-        latest_date = next_date
-
-    #Combine forecasts
-    final_df = pd.concat(future_preds, ignore_index=True)
-
-    #Save predictions
-    final_df.to_csv(PRED_OUTPUT_FILE, index=False)
-
-    #Print save path
-    print("\nSaved predictions to:", PRED_OUTPUT_FILE)
+    run_recursive_forecast(
+        model=model,
+        history_frame=pd.concat([train, val, test], ignore_index=True),
+        train_frame=train,
+        active_features=active_features,
+        feature_set_name=FEATURE_SET,
+        output_file=PRED_OUTPUT_FILE,
+        target=TARGET,
+        train_end=TRAIN_END,
+        raw_dir=RAW_DIR,
+        build_feature_sets_fn=build_linear_feature_sets,
+        add_history_features_fn=add_history_features,
+        add_train_only_climatology_fn=add_train_only_climatology,
+        add_experimental_features_fn=add_experimental_features,
+        add_era5_features_fn=add_era5_features,
+        predict_fn=lambda fitted_model, X_future: fitted_model.predict(X_future),
+        inverse_transform_fn=inverse_target,
+        fill_values=train_feature_fill_values,
+        forecast_months=FORECAST_MONTHS,
+        era5_feature_level=ERA5_FEATURE_LEVEL,
+    )
 
 #Skip forecast in ERA or comparison mode
 elif RUN_FORECAST:
