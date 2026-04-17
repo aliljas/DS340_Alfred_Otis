@@ -48,9 +48,10 @@ except ImportError as exc:
 BASE_DIR = Path(__file__).resolve().parents[2]
 PROCESSED_DIR = BASE_DIR / "data/processed"
 RAW_DIR = BASE_DIR / "data/raw"
+PROCESSED_DIR = Path(os.getenv("LIGHTGBM_OUTPUT_DIR", str(PROCESSED_DIR)))
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 RAW_DIR.mkdir(parents=True, exist_ok=True)
-DATA_FILE = PROCESSED_DIR / "na_pm25_cells_clean.csv"
+DATA_FILE = Path(os.getenv("LIGHTGBM_DATA_FILE", str(PROCESSED_DIR / "na_pm25_cells_clean.csv")))
 
 TRAIN_END = pd.Timestamp("2021-01-01")
 VAL_END = pd.Timestamp("2022-01-01")
@@ -66,6 +67,7 @@ CATEGORICAL_FEATURES = ["month", "region_lat_bin", "region_lon_bin"]
 USE_ERA5 = os.getenv("LIGHTGBM_USE_ERA5", "0") == "1"
 ERA5_FEATURE_LEVEL = os.getenv("LIGHTGBM_ERA5_FEATURE_LEVEL", "extended")
 RUN_FORECAST = os.getenv("LIGHTGBM_RUN_FORECAST", "1") == "1"
+FORECAST_MONTHS = int(os.getenv("LIGHTGBM_FORECAST_MONTHS", "12"))
 
 LIGHTGBM_PARAMS = {
     "n_estimators": 1200,
@@ -303,6 +305,7 @@ if RUN_FORECAST and not USE_ERA5 and not COMPARE_ERA5:
         ),
         inverse_transform_fn=inverse_target,
         fill_values=train_feature_fill_values,
+        forecast_months=FORECAST_MONTHS,
         era5_feature_level=ERA5_FEATURE_LEVEL,
         prepare_model_frame_fn=prepare_model_frame,
     )
