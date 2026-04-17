@@ -2,25 +2,38 @@ import os
 import tempfile
 from pathlib import Path
 
-#Cross-platform Matplotlib cache
+# Use a writable Matplotlib cache so plots work on classroom machines too.
 MPLCONFIGDIR = Path(tempfile.gettempdir()) / "matplotlib-cache"
 MPLCONFIGDIR.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault("MPLCONFIGDIR", str(MPLCONFIGDIR))
 
 try:
+    # Use a non-interactive backend because this script saves figures to disk.
     import matplotlib
     matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+
+    # Core numerical and table libraries.
     import numpy as np
     import pandas as pd
-    from sklearn.metrics import (
-        mean_absolute_error,
-        mean_squared_error,
-        median_absolute_error,
-        r2_score,
-    )
+
+    # XGBoost model.
     from xgboost import XGBRegressor
 
+    # Shared project helpers so this script follows the same pipeline as the
+    # rest of the repository.
+    from common_model_utils import (
+        build_comparison_table,
+        build_metrics_table,
+        compute_metrics,
+        inverse_target as shared_inverse_target,
+        print_metrics,
+        print_run_configuration,
+        run_recursive_forecast,
+        save_era5_comparison_plot,
+        save_main_results_plot,
+        split_train_val_test,
+        transform_target as shared_transform_target,
+    )
     from model_feature_utils import (
         TARGET,
         add_era5_features,
@@ -37,33 +50,52 @@ except ImportError as exc:
     ) from exc
 
 
-#Paths/config
+# ---------------------------------------------------------------------------
+# PATHS AND GLOBAL CONFIG
+# ---------------------------------------------------------------------------
+
+# Anchor the script to the project root so paths stay portable.
 BASE_DIR = Path(__file__).resolve().parents[2]
-PROCESSED_DIR = BASE_DIR / "data/processed"
+
+# Allow the class demo to redirect outputs into its own folder.
+PROCESSED_DIR = Path(os.getenv("XGB_OUTPUT_DIR", str(BASE_DIR / "data/processed")))
 RAW_DIR = BASE_DIR / "data/raw"
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 RAW_DIR.mkdir(parents=True, exist_ok=True)
-DATA_FILE = PROCESSED_DIR / "na_pm25_cells_clean.csv"
 
+# Allow the class demo to hand this script a sampled CSV instead of the full
+# cleaned modeling table.
+DATA_FILE = Path(os.getenv("XGB_DATA_FILE", str(PROCESSED_DIR / "na_pm25_cells_clean.csv")))
+
+# Keep the same train / validation / test boundaries as the rest of the project.
 TRAIN_END = pd.Timestamp("2021-01-01")
 VAL_END = pd.Timestamp("2022-01-01")
 RANDOM_SEED = 42
 
+# Feature-set choice and run behavior.
 FEATURE_SET = os.getenv("XGB_FEATURE_SET", "trend_region")
 TARGET_TRANSFORM = os.getenv("XGB_TARGET_TRANSFORM", "log1p")
 SAVE_PLOT = os.getenv("XGB_SAVE_PLOT", "0") == "1"
 SAVE_COMPARISON_PLOT = os.getenv("XGB_SAVE_COMPARISON_PLOT", "1") == "1"
-COMPARE_ERA5 = os.getenv("XGB_COMPARE_ERA5", "1") == "1"
-USE_ERA5 = os.getenv("XGB_USE_ERA5", "1") == "1"
+COMPARE_ERA5 = os.getenv("XGB_COMPARE_ERA5", "0") == "1"
+USE_ERA5 = os.getenv("XGB_USE_ERA5", "0") == "1"
 ERA5_FEATURE_LEVEL = os.getenv("XGB_ERA5_FEATURE_LEVEL", "core")
 RUN_FORECAST = os.getenv("XGB_RUN_FORECAST", "1") == "1"
+FORECAST_MONTHS = int(os.getenv("XGB_FORECAST_MONTHS", "12"))
+
+# When the classroom demo calls this script on sampled data, it can flip this
+# flag on so we skip any slower tuning workflow and use a fixed parameter set.
+SKIP_OPTUNA = os.getenv("XGB_SKIP_OPTUNA", "0") == "1"
+
 MODEL_NAME = "XGBoost"
 
+# Stable project-style XGBoost settings. These are used directly in demo mode
+# and also act as the main default configuration for regular runs.
 XGB_PARAMS = {
-    "n_estimators": 1500,
-    "learning_rate": 0.05,
-    "max_depth": 7,
-    "min_child_weight": 12,
+    "n_estimators": 900,
+    "learning_rate": 0.06,
+    "max_depth": 6,
+    "min_child_weight": 10,
     "subsample": 0.8,
     "colsample_bytree": 0.8,
     "reg_alpha": 0.2,
@@ -75,6 +107,7 @@ XGB_PARAMS = {
     "n_jobs": -1,
 }
 
+# Keep the output filenames aligned with the rest of the repository.
 PRED_OUTPUT_FILE = PROCESSED_DIR / "xgb_predictions_2023.csv"
 METRICS_OUTPUT_FILE = PROCESSED_DIR / "xgb_eval_metrics.csv"
 IMPORTANCE_OUTPUT_FILE = PROCESSED_DIR / "xgb_feature_importance.csv"
@@ -83,71 +116,49 @@ COMPARISON_METRICS_OUTPUT_FILE = PROCESSED_DIR / "xgb_era5_comparison_metrics.cs
 COMPARISON_PLOT_OUTPUT_FILE = PROCESSED_DIR / "xgb_era5_comparison.png"
 
 
-#Metric helpers
-#Compute paper metrics
-def compute_metrics(y_true, y_pred):
-    return {
-        "RMSE": float(np.sqrt(mean_squared_error(y_true, y_pred))),
-        "MAE": float(mean_absolute_error(y_true, y_pred)),
-        "R2": float(r2_score(y_true, y_pred)),
-        "MedianAE": float(median_absolute_error(y_true, y_pred)),
-        "Bias": float(np.mean(y_pred - y_true)),
-    }
+# ---------------------------------------------------------------------------
+# TARGET TRANSFORMS
+# ---------------------------------------------------------------------------
 
-
-#Print helper
-#Print metrics consistently
-def print_metrics(name, metrics):
-    print(f"\n{name}")
-    print(f"RMSE:      {metrics['RMSE']:.6f}")
-    print(f"MAE:       {metrics['MAE']:.6f}")
-    print(f"R^2:       {metrics['R2']:.6f}")
-    print(f"Median AE: {metrics['MedianAE']:.6f}")
-    print(f"Bias:      {metrics['Bias']:.6f}")
-
-
-#Target transform
-#Train in transformed space
 def transform_target(values):
-    if TARGET_TRANSFORM == "log1p":
-        return np.log1p(values)
-    if TARGET_TRANSFORM == "none":
-        return values
-    raise ValueError("XGB_TARGET_TRANSFORM must be 'log1p' or 'none'")
+    # Reuse the shared transform helper so this matches the other model scripts.
+    return shared_transform_target(values, TARGET_TRANSFORM, "XGB_TARGET_TRANSFORM")
 
 
-#Target inverse transform
-#Return to PM2.5 scale
 def inverse_target(values):
-    if TARGET_TRANSFORM == "log1p":
-        return np.expm1(values)
-    return values
+    # Reuse the shared inverse-transform helper so predictions land back on the
+    # original PM2.5 scale.
+    return shared_inverse_target(values, TARGET_TRANSFORM)
 
 
-#One XGBoost scenario
-#Fit one scenario
-def fit_scenario(label, feature_list, train_frame, val_frame, test_frame):
-    #Feature matrices
-    X_train = train_frame[feature_list]
-    X_val = val_frame[feature_list]
-    X_test = test_frame[feature_list]
+# ---------------------------------------------------------------------------
+# MODEL FITTING
+# ---------------------------------------------------------------------------
 
-    #Targets
-    y_train = transform_target(train_frame[TARGET].values)
-    y_val = transform_target(val_frame[TARGET].values)
-    y_val_raw = val_frame[TARGET].values
-    y_test = test_frame[TARGET].values
+def fit_scenario(label, features, train, val, test):
+    # Build the feature matrices for train, validation, and test.
+    X_train = train[features]
+    X_val = val[features]
+    X_test = test[features]
+
+    # Train in transformed space but score in the original PM2.5 units.
+    y_train = transform_target(train[TARGET].values)
+    y_val = transform_target(val[TARGET].values)
+    y_val_raw = val[TARGET].values
+    y_test = test[TARGET].values
 
     print(f"\n--- TRAINING {MODEL_NAME.upper()} ({label}) ---")
 
-    #Build model
+    # In sampled classroom runs, skip any expensive tuning logic and just fit
+    # the fixed project configuration. This keeps the live demo fast.
+    if SKIP_OPTUNA:
+        print("Skipping Optuna/tuning because XGB_SKIP_OPTUNA=1.")
+
     model = XGBRegressor(
         eval_metric="rmse",
-        early_stopping_rounds=75,
+        early_stopping_rounds=50,
         **XGB_PARAMS,
     )
-
-    #Fit with early stopping
     model.fit(
         X_train,
         y_train,
@@ -155,26 +166,30 @@ def fit_scenario(label, feature_list, train_frame, val_frame, test_frame):
         verbose=100,
     )
     print("--- DONE ---")
-    print("Best iteration:", model.best_iteration)
 
-    #Predict validation rows
-    val_pred = inverse_target(model.predict(X_val, iteration_range=(0, model.best_iteration + 1)))
+    # XGBoost returns a zero-based best iteration, so add 1 to get the number
+    # of boosting rounds we actually want to use for prediction.
+    best_iteration = model.best_iteration + 1 if model.best_iteration is not None else XGB_PARAMS["n_estimators"]
 
-    #Predict test rows
-    test_pred = inverse_target(model.predict(X_test, iteration_range=(0, model.best_iteration + 1)))
+    # Predict validation and test on the original PM2.5 scale.
+    val_pred = inverse_target(model.predict(X_val, iteration_range=(0, best_iteration)))
+    test_pred = inverse_target(model.predict(X_test, iteration_range=(0, best_iteration)))
 
-    #Build importance table
+    # Save feature importance in a project-friendly tabular form.
     importance_df = pd.DataFrame(
         {
-            "feature": feature_list,
+            "feature": features,
             "importance": model.feature_importances_,
         }
     ).sort_values("importance", ascending=False)
 
+    # Return everything the rest of the script needs for metrics, plots, and
+    # forecasting.
     return {
         "label": label,
-        "features": feature_list,
+        "features": features,
         "model": model,
+        "best_iteration": best_iteration,
         "X_test": X_test,
         "y_test": y_test,
         "test_pred": test_pred,
@@ -184,194 +199,29 @@ def fit_scenario(label, feature_list, train_frame, val_frame, test_frame):
     }
 
 
-#Main summary plot
-#Save the main summary figure
-def save_main_plot(result):
-    if not SAVE_PLOT:
-        print("Skipped plot generation. Set XGB_SAVE_PLOT=1 to save plots.")
-        return
+def fit_forecast_model(observed_history, features, best_iteration):
+    # Refit XGBoost on all observed data before generating the recursive 2023
+    # forecast path.
+    X_full = observed_history[features]
+    y_full = transform_target(observed_history[TARGET].values)
 
-    #Create a 3-panel figure
-    fig = plt.figure(figsize=(18, 5))
+    print(f"\n--- RETRAINING {MODEL_NAME.upper()} FOR FORECAST ---")
 
-    #Feature chart
-    plt.subplot(1, 3, 1)
-    #Top 15 features
-    top_imp = result["importance_df"].head(15).sort_values("importance")
-    #Plot importance bars
-    plt.barh(top_imp["feature"], top_imp["importance"])
-    #Panel title
-    plt.title("Top 15 Feature Importance")
-
-    #Predicted vs actual
-    plt.subplot(1, 3, 2)
-    #Plot sample size
-    plot_sample = min(100_000, len(result["y_test"]))
-    #Sample test rows
-    sample_idx = np.random.default_rng(RANDOM_SEED).choice(
-        len(result["y_test"]),
-        size=plot_sample,
-        replace=False,
+    forecast_model = XGBRegressor(
+        eval_metric="rmse",
+        n_estimators=max(1, int(best_iteration)),
+        **{key: value for key, value in XGB_PARAMS.items() if key != "n_estimators"},
     )
-    #Scatter actual vs predicted
-    plt.scatter(result["y_test"][sample_idx], result["test_pred"][sample_idx], alpha=0.25, s=5)
-    #Axis limits
-    lims = [
-        min(float(result["y_test"].min()), float(np.min(result["test_pred"]))),
-        max(float(result["y_test"].max()), float(np.max(result["test_pred"]))),
-    ]
-    #Perfect-fit line
-    plt.plot(lims, lims, "r--", linewidth=1)
-    #X label
-    plt.xlabel("Actual PM2.5")
-    #Y label
-    plt.ylabel("Predicted PM2.5")
-    #Panel title
-    plt.title("Predicted vs Actual (Test)")
-
-    #Residual histogram
-    plt.subplot(1, 3, 3)
-    #Residuals
-    residuals = result["y_test"] - result["test_pred"]
-    #Residual histogram
-    plt.hist(residuals, bins=60)
-    #Zero line
-    plt.axvline(0, linewidth=1)
-    #X label
-    plt.xlabel("Residual (Actual - Predicted)")
-    #Panel title
-    plt.title("Residual Distribution")
-
-    #Tight layout
-    plt.tight_layout()
-    #Save figure
-    plt.savefig(PLOT_OUTPUT_FILE, dpi=150)
-    #Close figure to save memory
-    plt.close()
-
-    #Print save path
-    print("Saved plot to:", PLOT_OUTPUT_FILE)
+    forecast_model.fit(X_full, y_full, verbose=False)
+    return forecast_model
 
 
-#Before/after ERA5 plot
-def save_comparison_plot(baseline_result, enhanced_result):
-    if not SAVE_COMPARISON_PLOT:
-        print("Skipped comparison plot generation. Set XGB_SAVE_COMPARISON_PLOT=1 to save it.")
-        return
+# ---------------------------------------------------------------------------
+# DATA LOADING AND SHARED FEATURE PIPELINE
+# ---------------------------------------------------------------------------
 
-    #Create a 2x2 paper-style comparison figure
-    fig = plt.figure(figsize=(12, 10))
-
-    #R^2 comparison bars
-    plt.subplot(2, 2, 1)
-    #Set shared labels
-    labels = ["Validation", "Test"]
-    #Set bar positions
-    x = np.arange(len(labels))
-    #Set bar width
-    width = 0.35
-    #Collect baseline R^2 values
-    baseline_r2 = [baseline_result["val_metrics"]["R2"], baseline_result["test_metrics"]["R2"]]
-    #Collect ERA R^2 values
-    enhanced_r2 = [enhanced_result["val_metrics"]["R2"], enhanced_result["test_metrics"]["R2"]]
-    #Draw baseline bars
-    plt.bar(x - width / 2, baseline_r2, width=width, label="Without ERA5")
-    #Draw ERA bars
-    plt.bar(x + width / 2, enhanced_r2, width=width, label="With ERA5")
-    #Set x ticks
-    plt.xticks(x, labels)
-    #Set y label
-    plt.ylabel("R^2")
-    #Set panel title
-    plt.title("XGBoost R^2 Before vs After ERA5")
-    #Show legend
-    plt.legend()
-
-    #RMSE comparison bars
-    plt.subplot(2, 2, 2)
-    #Collect baseline RMSE values
-    baseline_rmse = [baseline_result["val_metrics"]["RMSE"], baseline_result["test_metrics"]["RMSE"]]
-    #Collect ERA RMSE values
-    enhanced_rmse = [enhanced_result["val_metrics"]["RMSE"], enhanced_result["test_metrics"]["RMSE"]]
-    #Draw baseline bars
-    plt.bar(x - width / 2, baseline_rmse, width=width, label="Without ERA5")
-    #Draw ERA bars
-    plt.bar(x + width / 2, enhanced_rmse, width=width, label="With ERA5")
-    #Set x ticks
-    plt.xticks(x, labels)
-    #Set y label
-    plt.ylabel("RMSE")
-    #Set panel title
-    plt.title("XGBoost RMSE Before vs After ERA5")
-    #Show legend
-    plt.legend()
-
-    #Predicted vs actual without ERA5
-    plt.subplot(2, 2, 3)
-    #Plot sample size
-    plot_sample = min(75_000, len(baseline_result["y_test"]))
-    #Shared sampled rows
-    sample_idx = np.random.default_rng(RANDOM_SEED).choice(
-        len(baseline_result["y_test"]),
-        size=plot_sample,
-        replace=False,
-    )
-    #Scatter baseline predictions
-    plt.scatter(
-        baseline_result["y_test"][sample_idx],
-        baseline_result["test_pred"][sample_idx],
-        alpha=0.2,
-        s=5,
-    )
-    #Axis limits
-    lims = [
-        min(float(baseline_result["y_test"].min()), float(np.min(baseline_result["test_pred"]))),
-        max(float(baseline_result["y_test"].max()), float(np.max(baseline_result["test_pred"]))),
-    ]
-    #Perfect-fit line
-    plt.plot(lims, lims, "r--", linewidth=1)
-    #X label
-    plt.xlabel("Actual PM2.5")
-    #Y label
-    plt.ylabel("Predicted PM2.5")
-    #Panel title
-    plt.title("Without ERA5")
-
-    #Predicted vs actual with ERA5
-    plt.subplot(2, 2, 4)
-    #Scatter ERA predictions
-    plt.scatter(
-        enhanced_result["y_test"][sample_idx],
-        enhanced_result["test_pred"][sample_idx],
-        alpha=0.2,
-        s=5,
-    )
-    #Axis limits
-    lims = [
-        min(float(enhanced_result["y_test"].min()), float(np.min(enhanced_result["test_pred"]))),
-        max(float(enhanced_result["y_test"].max()), float(np.max(enhanced_result["test_pred"]))),
-    ]
-    #Perfect-fit line
-    plt.plot(lims, lims, "r--", linewidth=1)
-    #X label
-    plt.xlabel("Actual PM2.5")
-    #Y label
-    plt.ylabel("Predicted PM2.5")
-    #Panel title
-    plt.title("With ERA5")
-
-    #Tighten layout
-    plt.tight_layout()
-    #Save figure
-    plt.savefig(COMPARISON_PLOT_OUTPUT_FILE, dpi=150)
-    #Close figure to save memory
-    plt.close()
-
-    print("Saved ERA5 comparison plot to:", COMPARISON_PLOT_OUTPUT_FILE)
-
-
-#Load/features
-#Build the shared modeling table before fitting XGBoost.
+# Build the modeling table through the shared project pipeline so XGBoost uses
+# the same cleaned data and feature logic as the other models.
 df, era5_feature_names = prepare_modeling_frame(
     DATA_FILE,
     RAW_DIR,
@@ -383,54 +233,42 @@ df, era5_feature_names = prepare_modeling_frame(
     target=TARGET,
 )
 
-#Split
-#Use full 2021 for validation and full 2022 for the holdout test year.
-train = df[df["date"] < TRAIN_END].copy()
-val = df[(df["date"] >= TRAIN_END) & (df["date"] < VAL_END)].copy()
-test = df[df["date"] >= VAL_END].copy()
+# Split by time so the evaluation remains forecast-style rather than random.
+train, val, test = split_train_val_test(df, TRAIN_END, VAL_END)
 
+# Build the no-ERA and ERA-aware feature-set dictionaries from the shared
+# project utility.
 feature_sets_no_era5 = build_feature_sets([])
 feature_sets_with_era5 = build_feature_sets(era5_feature_names)
 
-#Validate feature set choice
 if FEATURE_SET not in feature_sets_with_era5:
     raise ValueError(
         f"Unknown XGB_FEATURE_SET={FEATURE_SET!r}. "
         f"Choose from: {', '.join(feature_sets_with_era5)}"
     )
 
-#Baseline features
 baseline_features = feature_sets_no_era5[FEATURE_SET]
-
-#ERA-aware features
 enhanced_features = feature_sets_with_era5[FEATURE_SET]
-
-#Pick active features
 active_features = enhanced_features if era5_feature_names else baseline_features
 
-#Print active setup
-print(f"\nFeature set: {FEATURE_SET}")
-print(f"Feature count: {len(active_features)}")
-print(f"Target transform: {TARGET_TRANSFORM}")
-print(f"ERA5 feature level: {ERA5_FEATURE_LEVEL}")
-print(f"\nTrain: {len(train):,}  Val: {len(val):,}  Test: {len(test):,}")
+print_run_configuration(FEATURE_SET, active_features, TARGET_TRANSFORM, ERA5_FEATURE_LEVEL, train, val, test)
 
-#Optional baseline
-#Train the no-ERA5 scenario first when we want a paper-ready comparison.
+
+# ---------------------------------------------------------------------------
+# TRAIN, SCORE, AND SAVE OUTPUTS
+# ---------------------------------------------------------------------------
+
 baseline_result = None
 if COMPARE_ERA5 and era5_feature_names:
+    # Train a no-ERA baseline only when we explicitly want a before/after ERA5
+    # comparison table or figure.
     baseline_result = fit_scenario("Without ERA5", baseline_features, train, val, test)
 
-#Set the active scenario label
-enhanced_label = "With ERA5" if era5_feature_names else "No ERA5 Available"
-
-#Fit the active scenario
+enhanced_label = "With ERA5" if era5_feature_names else "Without ERA5"
 enhanced_result = fit_scenario(enhanced_label, active_features, train, val, test)
 
-#Build the lag-1 benchmark
+# Keep the lag-1 naive benchmark for context in the metrics table.
 naive_pred = enhanced_result["X_test"]["pm25_lag1"].values
-
-#Score the lag-1 benchmark
 naive_metrics = compute_metrics(enhanced_result["y_test"], naive_pred)
 
 print("\n--- FINAL RESULTS ---")
@@ -438,171 +276,89 @@ print_metrics(f"{MODEL_NAME} Validation Metrics", enhanced_result["val_metrics"]
 print_metrics(f"{MODEL_NAME} Test Metrics", enhanced_result["test_metrics"])
 print_metrics("Naive Test Metrics", naive_metrics)
 
-#Build metrics table
-metrics_df = pd.DataFrame(
-    [
-        {"Dataset": "Validation", "Model": MODEL_NAME, "FeatureSet": FEATURE_SET, "Scenario": enhanced_label, **enhanced_result["val_metrics"]},
-        {"Dataset": "Test", "Model": MODEL_NAME, "FeatureSet": FEATURE_SET, "Scenario": enhanced_label, **enhanced_result["test_metrics"]},
-        {"Dataset": "Naive_Test", "Model": "pm25_lag1", "Scenario": "lag1", **naive_metrics},
-    ]
+metrics_df = build_metrics_table(
+    MODEL_NAME,
+    FEATURE_SET,
+    enhanced_label,
+    enhanced_result["val_metrics"],
+    enhanced_result["test_metrics"],
+    naive_metrics,
 )
-
-#Save metrics CSV
 metrics_df.to_csv(METRICS_OUTPUT_FILE, index=False)
-
-#Print save path
 print("\nSaved evaluation metrics to:", METRICS_OUTPUT_FILE)
 
-#Feature importance
-#Save importance CSV
 enhanced_result["importance_df"].to_csv(IMPORTANCE_OUTPUT_FILE, index=False)
-
-#Print save path
 print("Saved feature importance to:", IMPORTANCE_OUTPUT_FILE)
-
-#Print importance header
 print("\nTop 15 Features:")
-
-#Print top importance rows
 print(enhanced_result["importance_df"].head(15).to_string(index=False))
 
 if baseline_result is not None:
-    #Build comparison table
-    comparison_df = pd.DataFrame(
-        [
-            {"Scenario": "Without_ERA5", "Dataset": "Validation", "FeatureSet": FEATURE_SET, **baseline_result["val_metrics"]},
-            {"Scenario": "Without_ERA5", "Dataset": "Test", "FeatureSet": FEATURE_SET, **baseline_result["test_metrics"]},
-            {"Scenario": "With_ERA5", "Dataset": "Validation", "FeatureSet": FEATURE_SET, **enhanced_result["val_metrics"]},
-            {"Scenario": "With_ERA5", "Dataset": "Test", "FeatureSet": FEATURE_SET, **enhanced_result["test_metrics"]},
-        ]
-    )
-    #Save comparison CSV
+    comparison_df = build_comparison_table(FEATURE_SET, baseline_result, enhanced_result)
     comparison_df.to_csv(COMPARISON_METRICS_OUTPUT_FILE, index=False)
-    #Print save path
     print("Saved ERA5 comparison metrics to:", COMPARISON_METRICS_OUTPUT_FILE)
-    #Save comparison figure
-    save_comparison_plot(baseline_result, enhanced_result)
+    save_era5_comparison_plot(
+        baseline_result,
+        enhanced_result,
+        COMPARISON_PLOT_OUTPUT_FILE,
+        SAVE_COMPARISON_PLOT,
+        "Skipped comparison plot generation. Set XGB_SAVE_COMPARISON_PLOT=1 to save it.",
+        "XGBoost",
+        RANDOM_SEED,
+    )
 else:
-    #Explain skipped comparison
     print("Skipped ERA5 comparison outputs because the baseline scenario was not run.")
 
-#Save optional main figure
-save_main_plot(enhanced_result)
+save_main_results_plot(
+    enhanced_result,
+    PLOT_OUTPUT_FILE,
+    SAVE_PLOT,
+    "Skipped plot generation. Set XGB_SAVE_PLOT=1 to save plots.",
+    "importance_df",
+    "importance",
+    "Top 15 Feature Importance",
+    RANDOM_SEED,
+)
 
-#Run baseline forecast only
+
+# ---------------------------------------------------------------------------
+# STRICT NO-ERA FORECAST PATH
+# ---------------------------------------------------------------------------
+
 if RUN_FORECAST and not USE_ERA5 and not COMPARE_ERA5:
-    #Start forecast section
-    print("\n--- FORECASTING 2023 ---")
+    # Refit the final XGBoost model on all observed history before forecasting.
+    observed_history = pd.concat([train, val, test], ignore_index=True)
+    forecast_model = fit_forecast_model(
+        observed_history,
+        active_features,
+        enhanced_result["best_iteration"],
+    )
 
-    #Keep the observed history
-    history = df[["lat", "lon", "date", TARGET]].copy()
+    # Fill any remaining forecast-time feature gaps with training medians.
+    train_feature_fill_values = train[active_features].median(numeric_only=True).fillna(0.0)
 
-    #Store each forecast month
-    future_preds = []
-
-    #Track the latest known month
-    latest_date = history["date"].max()
-
-    #Reuse training medians for fill
-    train_feature_fill_values = train[active_features].median(numeric_only=True)
-
-    #Forecast 12 months
-    for step in range(12):
-        #Advance one month
-        next_date = latest_date + pd.DateOffset(months=1)
-
-        #Copy the latest grid
-        base = history[history["date"] == latest_date][["lat", "lon"]].copy()
-
-        #Set the future month
-        base["date"] = next_date
-
-        #Append blank target rows
-        temp = pd.concat([history, base.assign(pm25=np.nan)], ignore_index=True)
-
-        #Sort for lag building
-        temp = temp.sort_values(["lat", "lon", "date"]).reset_index(drop=True)
-
-        #Add lag features
-        temp = add_history_features(temp, target=TARGET)
-
-        #Add climatology
-        temp = add_train_only_climatology(temp, train_end=TRAIN_END, target=TARGET)
-
-        #Add regional features
-        temp = add_experimental_features(temp)
-
-        #Keep forecast causality clean
-        temp, future_era5_feature_names = add_era5_features(
-            temp,
-            raw_dir=RAW_DIR,
-            train_end=TRAIN_END,
-            use_era5=False,
-        )
-
-        #Rebuild the feature set
-        future_feature_sets = build_feature_sets(future_era5_feature_names)
-
-        #Match the trained feature set
-        future_features = future_feature_sets[FEATURE_SET]
-
-        #Keep just the next-month rows
-        future_rows = temp[temp["date"] == next_date].copy()
-
-        #Build the forecast matrix
-        X_future = future_rows.loc[:, future_features].copy()
-
-        #Fill from training medians
-        X_future = X_future.fillna(train_feature_fill_values)
-
-        #Fill any leftovers
-        X_future = X_future.fillna(0.0)
-
-        #Print step header
-        print(f"\nForecast step {step + 1}/12: {next_date.strftime('%Y-%m-%d')}")
-
-        #Predict next month
-        preds = inverse_target(
-            enhanced_result["model"].predict(
-                X_future,
-                iteration_range=(0, enhanced_result["model"].best_iteration + 1),
-            )
-        )
-
-        #Clip to train range
-        preds = np.clip(
-            preds,
-            float(train[TARGET].min()),
-            float(train[TARGET].max()),
-        )
-
-        #Write forecast target
-        future_rows[TARGET] = preds
-
-        #Append to history
-        history = pd.concat(
-            [history, future_rows[["lat", "lon", "date", TARGET]]],
-            ignore_index=True,
-        )
-
-        #Save this month
-        future_preds.append(future_rows[["lat", "lon", "date", TARGET]].copy())
-
-        #Advance pointer
-        latest_date = next_date
-
-    #Combine all months
-    final_df = pd.concat(future_preds, ignore_index=True)
-
-    #Save forecast CSV
-    final_df.to_csv(PRED_OUTPUT_FILE, index=False)
-
-    #Print forecast path
-    print("\nSaved predictions to:", PRED_OUTPUT_FILE)
-
-#Skip forecast in ERA or comparison mode
+    # Forecast month-by-month using the shared recursive forecast helper.
+    run_recursive_forecast(
+        model=forecast_model,
+        history_frame=observed_history,
+        train_frame=train,
+        active_features=active_features,
+        feature_set_name=FEATURE_SET,
+        output_file=PRED_OUTPUT_FILE,
+        target=TARGET,
+        train_end=TRAIN_END,
+        raw_dir=RAW_DIR,
+        build_feature_sets_fn=build_feature_sets,
+        add_history_features_fn=add_history_features,
+        add_train_only_climatology_fn=add_train_only_climatology,
+        add_experimental_features_fn=add_experimental_features,
+        add_era5_features_fn=add_era5_features,
+        predict_fn=lambda fitted_model, X_future: fitted_model.predict(X_future),
+        inverse_transform_fn=inverse_target,
+        fill_values=train_feature_fill_values,
+        forecast_months=FORECAST_MONTHS,
+        era5_feature_level=ERA5_FEATURE_LEVEL,
+    )
 elif RUN_FORECAST:
-    #Explain skipped forecast
     print(
         "\nSkipped forecasting because this run used "
         "ERA5 or comparison mode. The baseline no-ERA run remains the strict "
