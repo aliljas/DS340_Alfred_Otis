@@ -31,7 +31,7 @@ Convenience folder used for this project:
 
 GitHub release assets for the clean-machine workflow:
 
-- Cleaned PM2.5 modeling table ZIP: [https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv.zip](https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv.zip)
+- Cleaned PM2.5 modeling table CSV (`na_pm25_cells_clean.csv`): [https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv](https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv)
 - ERA raw data ZIP: [https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/ERA.Data.zip](https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/ERA.Data.zip)
 
 ## GHAP raw data
@@ -110,10 +110,10 @@ The active scripts do not use hard-coded user-specific file paths. Each script r
 
 If you are using the GitHub release assets instead of downloading from the original sources:
 
-1. Download `na_pm25_cells_clean.csv.zip` from the release assets and extract it into `data/processed/`.
+1. Download `na_pm25_cells_clean.csv` from the direct release link above and place it directly into `data/processed/`.
 2. Download `ERA.Data.zip` from the release assets and extract it into `data/raw/`.
 
-After extraction, the project should contain:
+After setup, the project should contain:
 
 `data/processed/na_pm25_cells_clean.csv`  
 Cleaned North America monthly PM2.5 modeling table.
