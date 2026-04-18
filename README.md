@@ -146,7 +146,7 @@ If that file does not exist yet, create it with the preprocessing script shown b
 From the project root:
 
 ```bash
-python -m venv venv
+py -m venv venv
 ```
 
 Mac/Linux activation:
