@@ -1,78 +1,137 @@
-# PM2.5 air pollution data processing project
+# PM2.5 Forecasting Project
 
-This project builds a North America monthly PM2.5 panel from GHAP NetCDF files and trains multiple forecasting-style benchmark models. The current external weather input is limited to the two ERA5 monthly NetCDF files placed in `data/raw`.
+This repository builds a cleaned monthly North America PM2.5 panel and trains four forecasting models on that shared dataset:
 
-## Project structure
+- Ridge Regression
+- XGBoost
+- CatBoost
+- LightGBM
+
+The project also supports optional ERA5 meteorological features for before-versus-after comparison runs.
+
+## Repository Layout
 
 `data/raw/`  
-Raw GHAP monthly NetCDF files and raw ERA5 NetCDF files.
+Raw GHAP monthly NetCDF files and ERA5 NetCDF files.
 
 `data/processed/`  
-Derived modeling tables, metrics, feature importance files, and plots.
+Cleaned modeling table, prediction outputs, evaluation metrics, feature importance files, and saved figures.
 
 `src/Codes/`  
-Preprocessing, modeling, and figure scripts.
+Preprocessing, modeling, shared utilities, and figure-generation scripts.
 
 `requirements.txt`  
-Pinned Python dependencies for a clean environment.
+Primary dependency list for the project environment.
 
-## Dataset access
+## Data Sources
 
-This repository does not store the full raw NetCDF datasets because they are too large for normal GitHub use. The raw files should be downloaded separately and then placed in `data/raw/`.
+Official sources:
 
-Official dataset sources:
+- GHAP monthly PM2.5: [https://zenodo.org/records/10800980](https://zenodo.org/records/10800980)
+- ERA5 monthly averaged single-level data: [https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=download](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=download)
 
-- GHAP monthly PM2.5 data: [https://zenodo.org/records/10800980](https://zenodo.org/records/10800980)
-- ERA5 monthly averaged data on single levels: [https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=download](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=download)
+Convenience sources used for this project:
 
-Convenience folder used for this project:
+- Google Drive folder: [https://drive.google.com/drive/folders/19ZsUzhA5A0bFTib73QfEwwCQGnO4vFwU?usp=sharing](https://drive.google.com/drive/folders/19ZsUzhA5A0bFTib73QfEwwCQGnO4vFwU?usp=sharing)
+- GitHub release assets:
+  - Cleaned modeling table CSV: [https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv](https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv)
+  - ERA raw data ZIP: [https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/ERA.Data.zip](https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/ERA.Data.zip)
 
-- Google Drive ZIPs and paper PDFs: [https://drive.google.com/drive/folders/19ZsUzhA5A0bFTib73QfEwwCQGnO4vFwU?usp=sharing](https://drive.google.com/drive/folders/19ZsUzhA5A0bFTib73QfEwwCQGnO4vFwU?usp=sharing)
+## Two Ways To Reproduce The Project
 
-GitHub release assets for the clean-machine workflow:
+You can reproduce the project in either of these ways:
 
-- Cleaned PM2.5 modeling table CSV (`na_pm25_cells_clean.csv`): [https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv](https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/na_pm25_cells_clean.csv)
-- ERA raw data ZIP: [https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/ERA.Data.zip](https://github.com/aliljas/DS340_Alfred_Otis/releases/download/project-data-v1/ERA.Data.zip)
+1. Use the prebuilt cleaned PM2.5 CSV and skip GHAP preprocessing.
+2. Start from the raw GHAP monthly NetCDF files and rebuild the cleaned panel yourself.
 
-## GHAP raw data
+Both approaches still require the ERA5 files if you want ERA5-enhanced runs.
 
-Download the monthly GHAP NetCDF files and place them directly in:
+## Option A: Fastest Setup With Final Data Files
+
+Use this option if you want the fastest exact reproduction of the modeling workflow.
+
+Required files:
+
+- `data/processed/na_pm25_cells_clean.csv`
+- `data/raw/meteorlogy-data.nc`
+- `data/raw/meteorlogy-data-other.nc`
+
+Setup:
+
+1. Download `na_pm25_cells_clean.csv` from the release asset link above.
+2. Place it in `data/processed/`.
+3. Download `ERA.Data.zip`.
+4. Extract it into `data/raw/`.
+
+After setup, you should have:
+
+`data/processed/na_pm25_cells_clean.csv`  
+Cleaned monthly North America PM2.5 modeling table.
+
+`data/raw/meteorlogy-data.nc`  
+ERA5 monthly precipitation file.
+
+`data/raw/meteorlogy-data-other.nc`  
+ERA5 monthly weather file containing temperature, dewpoint, pressure, cloud cover, and wind variables.
+
+## Option B: Full Rebuild From Raw GHAP Files
+
+Use this option if you want to reproduce the cleaned PM2.5 table from the original GHAP NetCDF files.
+
+Required raw files:
+
+- GHAP monthly NetCDF files matching `GHAP_PM2.5_M1K_*.nc`
+- `meteorlogy-data.nc`
+- `meteorlogy-data-other.nc`
+
+Place them in:
 
 `data/raw/`
 
-The preprocessing script expects filenames that match:
+Then run the preprocessing script:
 
-`GHAP_PM2.5_M1K_*.nc`
+Mac/Linux:
 
-Those files are the monthly PM2.5 source used to build the cleaned North America panel.
+```bash
+python src/Codes/Extract_Monthly_nc_values.py
+```
 
-## ERA5 raw data
+Windows:
 
-The model scripts expect two monthly ERA5 NetCDF files in:
+```powershell
+python src\Codes\Extract_Monthly_nc_values.py
+```
 
-`data/raw/meteorlogy-data.nc`
+That script writes:
 
-`data/raw/meteorlogy-data-other.nc`
+`data/processed/na_pm25_cells_clean.csv`
 
-The code is slightly forgiving on the exact names because it looks for `meteorlogy*.nc`, `meteorology*.nc`, or `era5*.nc`, but using the filenames above is the safest option.
+## ERA5 Download Instructions
 
-### ERA5 download steps
+If you need to rebuild or replace the ERA5 files, use these settings in the Copernicus Climate Data Store.
 
-1. Create or sign in to a Copernicus Climate Data Store account.
-2. Open the ERA5 dataset page: [https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=download](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=download)
-3. Choose the product for monthly averaged single-level reanalysis data.
-4. Select the time range from `2017-01` through `2023-12`.
-5. Use the North America area subset in CDS order:
-   - North: `84`
-   - West: `-168`
-   - South: `7`
-   - East: `-52`
-6. Choose `NetCDF` as the download format.
-7. Download the variables in two requests so the files stay manageable.
+Dataset:
 
-### ERA5 request 1
+- Monthly averaged ERA5 single-level reanalysis
 
-Recommended output filename:
+Time range:
+
+- `2017-01` through `2023-12`
+
+Geographic subset in CDS order:
+
+- North: `84`
+- West: `-168`
+- South: `7`
+- East: `-52`
+
+Format:
+
+- `NetCDF`
+
+Split the variables into two requests:
+
+Request 1 output filename:
 
 `meteorlogy-data-other.nc`
 
@@ -85,9 +144,7 @@ Variables:
 - `10m_u_component_of_wind`
 - `10m_v_component_of_wind`
 
-### ERA5 request 2
-
-Recommended output filename:
+Request 2 output filename:
 
 `meteorlogy-data.nc`
 
@@ -95,213 +152,325 @@ Variables:
 
 - `total_precipitation`
 
-### ERA5 notes
+Notes:
 
-- The downloaded files used in this project cover `2017-01` through `2023-12`.
-- The first file contains `d2m`, `sp`, `t2m`, `tcc`, `u10`, and `v10`.
-- The second file contains `tp`.
-- These two files are enough for the shared ERA5 feature pipeline used by the model scripts.
+- The code is forgiving on exact ERA filenames and looks for `meteorlogy*.nc`, `meteorology*.nc`, or `era5*.nc`.
+- The filenames above are still the safest choice.
 
-## Portable path setup
+## Environment Setup
 
-The active scripts do not use hard-coded user-specific file paths. Each script resolves the project root from its own location with `Path(__file__).resolve().parents[2]`, so the code should work on any machine as long as the project folder structure is preserved.
+Run all commands from the project root.
 
-## Required folder layout
+### Mac/Linux
 
-If you are using the GitHub release assets instead of downloading from the original sources:
-
-1. Download `na_pm25_cells_clean.csv` from the direct release link above and place it directly into `data/processed/`.
-2. Download `ERA.Data.zip` from the release assets and extract it into `data/raw/`.
-
-After setup, the project should contain:
-
-`data/processed/na_pm25_cells_clean.csv`  
-Cleaned North America monthly PM2.5 modeling table.
-
-`data/raw/meteorlogy-data.nc`  
-ERA5 monthly weather file.
-
-`data/raw/meteorlogy-data-other.nc`  
-Second ERA5 monthly weather file.
-
-If you are starting from the original source files instead, place the raw files here before running anything:
-
-`data/raw/GHAP_PM2.5_M1K_*.nc`  
-Monthly GHAP PM2.5 files.
-
-`data/raw/meteorlogy-data.nc`  
-ERA5 monthly weather file.
-
-`data/raw/meteorlogy-data-other.nc`  
-Second ERA5 monthly weather file.
-
-The model scripts expect the derived panel here:
-
-`data/processed/na_pm25_cells_clean.csv`
-
-If that file does not exist yet, create it with the preprocessing script shown below.
-
-## Environment setup
-
-From the project root:
+Create the virtual environment:
 
 ```bash
-py -m venv venv
+python3 -m venv venv
 ```
 
-Mac/Linux activation:
+Activate it:
 
 ```bash
 source venv/bin/activate
 ```
 
-Windows activation:
-
-```bash
-venv\Scripts\activate
-```
-
-Then install the project requirements:
+Install dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
+python -m pip install matplotlib
 ```
 
-## Preprocessing step
+### Windows
 
-If you are starting from the raw GHAP NetCDF files, first build the modeling table:
+Create the virtual environment:
 
-```bash
-python src/Codes/Extract_Monthly_nc_values.py
+```powershell
+py -m venv venv
 ```
 
-This reads the GHAP monthly files from `data/raw/` and writes:
+Activate it in Command Prompt:
 
-`data/processed/na_pm25_cells_clean.csv`
-
-## Main model scripts
-
-`src/Codes/LightGBM_model.py`  
-Primary LightGBM benchmark script. The default run is now the forecast-ready no-ERA baseline, and ERA5 comparison mode can be enabled with environment variables.
-
-`src/Codes/CatBoost_model.py`  
-CatBoost benchmark on the shared feature pipeline.
-
-`src/Codes/XGB_model.py`  
-XGBoost benchmark on the shared feature pipeline.
-
-`src/Codes/LR_model.py`  
-Linear regression baseline on the compact feature subset.
-
-`src/Codes/model_feature_utils.py`  
-Shared feature engineering used by all model scripts.
-
-## Run examples
-
-Full LightGBM run:
-
-```bash
-python src/Codes/LightGBM_model.py
+```powershell
+venv\Scripts\activate
 ```
 
-Full LightGBM run with ERA5 enabled:
+Or in PowerShell:
 
-```bash
-LIGHTGBM_USE_ERA5=1 python src/Codes/LightGBM_model.py
+```powershell
+.\venv\Scripts\Activate.ps1
 ```
 
-Full LightGBM run with before/after ERA5 comparison outputs:
+Install dependencies:
 
-```bash
-LIGHTGBM_USE_ERA5=1 LIGHTGBM_COMPARE_ERA5=1 python src/Codes/LightGBM_model.py
+```powershell
+python -m pip install -r requirements.txt
+python -m pip install matplotlib
 ```
 
-Full CatBoost run:
+Important note:
 
-```bash
-python src/Codes/CatBoost_model.py
-```
+- `matplotlib` is required by the model scripts and figure scripts. Install it even if your environment was just created from `requirements.txt`.
 
-Full CatBoost run with ERA5 enabled:
+## Main Model Scripts
 
-```bash
-CATBOOST_USE_ERA5=1 python src/Codes/CatBoost_model.py
-```
+Primary modeling scripts:
 
-Full CatBoost run with before/after ERA5 comparison outputs:
+- `src/Codes/LR_model.py`
+- `src/Codes/XGB_model.py`
+- `src/Codes/CatBoost_model.py`
+- `src/Codes/LightGBM_model.py`
 
-```bash
-CATBOOST_USE_ERA5=1 CATBOOST_COMPARE_ERA5=1 CATBOOST_EVAL_SAMPLE_ROWS=250000 python src/Codes/CatBoost_model.py
-```
+Shared utilities:
 
-Full XGBoost run:
+- `src/Codes/model_feature_utils.py`
+- `src/Codes/common_model_utils.py`
 
-```bash
-python src/Codes/XGB_model.py
-```
+## Final Baseline Runs
 
-Full ridge baseline run:
+These are the main no-ERA baseline runs. These are also the forecast-ready runs used for strict recursive forecasting.
+
+### Mac/Linux
+
+Ridge Regression:
 
 ```bash
 python src/Codes/LR_model.py
 ```
 
-Full ridge baseline run with ERA5 enabled:
+XGBoost:
+
+```bash
+python src/Codes/XGB_model.py
+```
+
+CatBoost:
+
+```bash
+python src/Codes/CatBoost_model.py
+```
+
+LightGBM:
+
+```bash
+python src/Codes/LightGBM_model.py
+```
+
+### Windows
+
+Ridge Regression:
+
+```powershell
+python src\Codes\LR_model.py
+```
+
+XGBoost:
+
+```powershell
+python src\Codes\XGB_model.py
+```
+
+CatBoost:
+
+```powershell
+python src\Codes\CatBoost_model.py
+```
+
+LightGBM:
+
+```powershell
+python src\Codes\LightGBM_model.py
+```
+
+## ERA5-Enhanced Runs
+
+Use these runs when you want the model trained with ERA5-enabled features.
+
+### Mac/Linux
+
+Ridge Regression:
 
 ```bash
 LR_USE_ERA5=1 python src/Codes/LR_model.py
 ```
 
-Full ridge baseline run with before/after ERA5 comparison outputs:
+XGBoost:
+
+```bash
+XGB_USE_ERA5=1 python src/Codes/XGB_model.py
+```
+
+CatBoost:
+
+```bash
+CATBOOST_USE_ERA5=1 python src/Codes/CatBoost_model.py
+```
+
+LightGBM:
+
+```bash
+LIGHTGBM_USE_ERA5=1 python src/Codes/LightGBM_model.py
+```
+
+### Windows
+
+Ridge Regression:
+
+```powershell
+set LR_USE_ERA5=1
+python src\Codes\LR_model.py
+```
+
+XGBoost:
+
+```powershell
+set XGB_USE_ERA5=1
+python src\Codes\XGB_model.py
+```
+
+CatBoost:
+
+```powershell
+set CATBOOST_USE_ERA5=1
+python src\Codes\CatBoost_model.py
+```
+
+LightGBM:
+
+```powershell
+set LIGHTGBM_USE_ERA5=1
+python src\Codes\LightGBM_model.py
+```
+
+## ERA5 Comparison Runs
+
+Use these when you want the before-versus-after ERA5 comparison outputs.
+
+### Mac/Linux
+
+Ridge Regression:
 
 ```bash
 LR_USE_ERA5=1 LR_COMPARE_ERA5=1 python src/Codes/LR_model.py
 ```
 
-## Forecast-ready runs
-
-For a strict recursive future forecast, use the baseline no-ERA path for each model. The scripts automatically skip forecasting in ERA5 or comparison mode so the forecast remains causally clean.
-
-Forecast-ready baseline runs:
+XGBoost:
 
 ```bash
-python src/Codes/LightGBM_model.py
+XGB_USE_ERA5=1 XGB_COMPARE_ERA5=1 python src/Codes/XGB_model.py
 ```
+
+CatBoost:
 
 ```bash
-python src/Codes/CatBoost_model.py
+CATBOOST_USE_ERA5=1 CATBOOST_COMPARE_ERA5=1 python src/Codes/CatBoost_model.py
 ```
+
+LightGBM:
 
 ```bash
-python src/Codes/XGB_model.py
+LIGHTGBM_USE_ERA5=1 LIGHTGBM_COMPARE_ERA5=1 python src/Codes/LightGBM_model.py
 ```
 
-```bash
-python src/Codes/LR_model.py
+### Windows
+
+Ridge Regression:
+
+```powershell
+set LR_USE_ERA5=1
+set LR_COMPARE_ERA5=1
+python src\Codes\LR_model.py
 ```
 
-## ERA5 notes
+XGBoost:
 
-All four model scripts now support the shared ERA5 feature pipeline. If the ERA5 files are missing and the model-specific `*_USE_ERA5` flag is left on, the script will stop with a clear setup message instead of silently continuing.
+```powershell
+set XGB_USE_ERA5=1
+set XGB_COMPARE_ERA5=1
+python src\Codes\XGB_model.py
+```
 
-ERA5 effects are model-dependent rather than universal. In the current experiments, ERA5 provided a modest improvement for LightGBM and improved the ridge baseline, while the strongest full CatBoost result remained the baseline model without ERA5. For that reason, `CatBoost_model.py` runs without ERA5 unless `CATBOOST_USE_ERA5=1` is set explicitly, and the comparison mode can be used when a before/after ERA5 table or figure is needed for analysis.
+CatBoost:
 
-In other words, ERA5 is supported across the project as an additive external feature source, but its benefit should be evaluated by model rather than assumed to help every model equally.
+```powershell
+set CATBOOST_USE_ERA5=1
+set CATBOOST_COMPARE_ERA5=1
+python src\Codes\CatBoost_model.py
+```
 
-For strict future forecasting, same-month ERA5 reanalysis should not be treated as a valid ex-ante predictor. The commented forecast blocks remain in the scripts for reference, but same-month ERA5 should stay disabled there unless forecast meteorology is available.
+LightGBM:
 
-## Reproducibility
+```powershell
+set LIGHTGBM_USE_ERA5=1
+set LIGHTGBM_COMPARE_ERA5=1
+python src\Codes\LightGBM_model.py
+```
 
-A TA can reproduce the intended workflow on a clean machine by:
+## What Each Run Produces
 
-1. cloning the repository
-2. creating and activating a fresh virtual environment
-3. running `python -m pip install -r requirements.txt`
-4. placing the GHAP and ERA5 raw NetCDF files in `data/raw/`
-5. running `python src/Codes/Extract_Monthly_nc_values.py`
-6. running any model script from the project root
+Each model writes outputs into `data/processed/`.
 
-All active scripts include import guards with clear setup messages if required Python packages are missing.
+Typical outputs include:
+
+- `*_eval_metrics.csv`
+- `*_predictions_2023.csv`
+- `*_feature_importance.csv` for tree-based models
+- `*_era5_comparison_metrics.csv` when comparison mode is enabled
+- `*_era5_comparison.png` when comparison mode saves a plot
+- `*_model_results.png` when the main plot is enabled
+
+Examples:
+
+- `lr_eval_metrics.csv`
+- `xgb_eval_metrics.csv`
+- `catboost_eval_metrics.csv`
+- `lightgbm_eval_metrics.csv`
+- `xgb_predictions_2023.csv`
+- `catboost_predictions_2023.csv`
+- `lightgbm_predictions_2023.csv`
+- `lr_predictions_2023.csv`
+
+## Important Forecasting Note
+
+For strict recursive forecasting, the no-ERA baseline runs are the cleanest forecast-ready path.
+
+Why:
+
+- same-month ERA5 reanalysis is not a true future predictor
+- the scripts intentionally skip strict forecast generation in ERA5 comparison mode
+- the baseline runs are the ones to use for the main 2023 recursive forecast outputs
+
+## Figure Scripts
+
+Figure and results scripts live in:
+
+`src/Codes/Figure and other codes/`
+
+Examples:
+
+- `Time Series.py`
+- `Top Features.py`
+- `All Model Results Table.py`
+- `XGB vs CatBoost.py`
+- `create_era5_comparison_figures.py`
+
+Run them from the project root after the model outputs have been saved.
+
+## Exact Final Reproduction Workflow
+
+If you want to reproduce the full final workflow from scratch on a clean machine:
+
+1. Clone the repository.
+2. Create and activate a fresh virtual environment.
+3. Install dependencies with:
+   - `python -m pip install -r requirements.txt`
+   - `python -m pip install matplotlib`
+4. Place `na_pm25_cells_clean.csv` into `data/processed/`.
+5. Place `meteorlogy-data.nc` and `meteorlogy-data-other.nc` into `data/raw/`.
+6. Run all four baseline model scripts.
+7. Run any ERA5 comparison scripts you need with the `*_USE_ERA5=1` and `*_COMPARE_ERA5=1` flags.
+8. Regenerate any final figures from `src/Codes/Figure and other codes/`.
 
 ## Authors
 
@@ -310,4 +479,4 @@ The Pennsylvania State University
 
 Otis Murray  
 The Pennsylvania State University  
-Major in statistical modeling data science, minor in math
+Major in Statistical Modeling Data Science, minor in Mathematics
