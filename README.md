@@ -9,6 +9,28 @@ This repository builds a cleaned monthly North America PM2.5 panel and trains fo
 
 The project also supports optional ERA5 meteorological features for before-versus-after comparison runs.
 
+## Read This First
+
+If you are a TA or first-time user on a clean computer, start here before doing anything else.
+
+Use this order:
+
+1. Download the project code from GitHub.
+2. Download the release-asset data files in the `Data Sources` section below.
+3. Follow the `First-Time VS Code Setup For The TA` section in this README exactly.
+
+That beginner section explains, step by step, how to:
+
+- install VS Code for the first time
+- install a compatible Python version
+- open the project folder in VS Code
+- create the virtual environment
+- install the requirements
+- select the correct Python interpreter
+- use the `Run Python File` button in VS Code
+
+If you follow that section exactly, the TA should be able to reproduce the clean-machine workflow shown in the demo.
+
 ## Repository Layout
 
 `data/raw/`  
@@ -156,6 +178,99 @@ Notes:
 
 - The code is forgiving on exact ERA filenames and looks for `meteorlogy*.nc`, `meteorology*.nc`, or `era5*.nc`.
 - The filenames above are still the safest choice.
+
+## First-Time VS Code Setup For The TA
+
+If the TA has never used VS Code or Python on the computer before, follow these steps exactly.
+
+1. Download Visual Studio Code from the official page: [https://code.visualstudio.com/download](https://code.visualstudio.com/download)
+2. Install VS Code with the normal default installer options.
+3. Download Python from the official page: [https://www.python.org/downloads/](https://www.python.org/downloads/)
+4. For this project, use Python `3.12` or Python `3.13`. Do **not** use Python `3.14` for the first clean-machine run.
+5. Install Python with the normal default installer options. If Windows offers an option to add Python to `PATH`, enable it.
+6. Download the repository from GitHub and extract it to a normal folder.
+7. Download the release assets listed above in this README.
+8. Extract `na_pm25_cells_clean.csv.zip` so that this file exists in the project:
+
+`data/processed/na_pm25_cells_clean.csv`
+
+9. Extract `ERA.Data.zip` so that these files exist in the project:
+
+`data/raw/meteorlogy-data.nc`
+
+`data/raw/meteorlogy-data-other.nc`
+
+10. Open VS Code.
+11. In VS Code, choose `File` -> `Open Folder...`
+12. Open the main project folder that contains this `README.md` file.
+13. If VS Code asks whether you trust the authors, choose the option to trust the folder.
+14. Open any Python file, for example `src/Codes/LightGBM_model.py`
+15. If VS Code asks to install the Python extension, install the official Python extension from Microsoft.
+16. Open a terminal inside VS Code by choosing `Terminal` -> `New Terminal`
+17. Create the project virtual environment from the project root.
+
+Mac/Linux:
+
+```bash
+python3 -m venv venv
+```
+
+Windows:
+
+```powershell
+py -m venv venv
+```
+
+18. Activate the virtual environment.
+
+Mac/Linux:
+
+```bash
+source venv/bin/activate
+```
+
+Windows Command Prompt:
+
+```powershell
+venv\Scripts\activate
+```
+
+Windows PowerShell:
+
+```powershell
+.\venv\Scripts\Activate.ps1
+```
+
+19. Install the project requirements:
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip install matplotlib
+```
+
+20. Set the Python interpreter in VS Code.
+21. Look at the bottom status bar in VS Code for the Python version.
+22. Click that Python version.
+23. Choose the interpreter inside this project’s `venv` folder.
+24. On Mac/Linux, the correct interpreter is usually `venv/bin/python`
+25. On Windows, the correct interpreter is usually `venv\Scripts\python.exe`
+26. If the interpreter is not listed, press `Cmd+Shift+P` on Mac or `Ctrl+Shift+P` on Windows, type `Python: Select Interpreter`, and choose the interpreter inside the local `venv` folder.
+27. After the interpreter is selected, open a `.py` file and look in the top-right corner for the play button labeled `Run Python File`.
+28. That button should run the script with the selected interpreter.
+
+Recommended first clean-machine run:
+
+```bash
+python src/Codes/LightGBM_model.py
+```
+
+If the TA wants to use the VS Code run button instead of typing the command:
+
+1. Open `src/Codes/LightGBM_model.py`
+2. Confirm the selected interpreter is the local `venv`
+3. Click the top-right `Run Python File` play button
+
+VS Code should open a terminal automatically and run the script with the selected interpreter.
 
 ## Environment Setup
 
